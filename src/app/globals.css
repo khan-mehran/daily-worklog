@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  --background: #f3f1f8;
+  --surface: #ffffff;
+  --subtle: #f0ecf7;
+  --border: #e6e1f0;
+  --text: #1f1d2b;
+  --muted: #6b6780;
+  --muted-on-background: #635f78;
+
+  --primary: #7453b5;
+  --primary-foreground: #ffffff;
+  --accent: #d63384;
+  --accent-foreground: #ffffff;
+  --accent-text: #b8236c;
+
+  --sidebar: #3d3359;
+  --sidebar-deep: #342b4d;
+  --sidebar-foreground: #cbc3e0;
+  --sidebar-heading: #9289b0;
+  --sidebar-hover: rgb(255 255 255 / 0.06);
+  --sidebar-selected: rgb(255 255 255 / 0.1);
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-indicator: #b9a3ea;
+  --highlight: #f5b700;
+  --highlight-foreground: #1a1d23;
+  --success: #16a34a;
+  --success-text: #15803d;
+  --warning: #f59e0b;
+  --warning-text: #b45309;
+  --danger: #dc2626;
+  --danger-foreground: #ffffff;
+  --info: #6d5bd0;
+
+  --palette-teal: #0f766e;
+  --palette-coral: #f2545b;
+  --palette-yellow: #f5b700;
+  --palette-violet: #6d5bd0;
+  --palette-sky: #0284c7;
+  --palette-pink: #db2777;
+  --palette-lime: #65a30d;
+  --palette-orange: #ea580c;
+  --palette-indigo: #4338ca;
+  --palette-slate: #475569;
+}
+
+:root.dark {
+  color-scheme: dark;
+
+  --background: #0e1116;
+  --surface: #171b22;
+  --subtle: #20252e;
+  --border: #2a303a;
+  --text: #eceef2;
+  --muted: #9aa3b2;
+  --muted-on-background: #9aa3b2;
+
+  --primary: #b69cf0;
+  --primary-foreground: #0e1116;
+  --accent: #f472b6;
+  --accent-foreground: #0e1116;
+  --accent-text: #f472b6;
+
+  --sidebar: #1b1726;
+  --sidebar-deep: #161320;
+  --sidebar-foreground: #b7afcc;
+  --sidebar-heading: #7d7598;
+  --sidebar-hover: rgb(255 255 255 / 0.05);
+  --sidebar-selected: rgb(255 255 255 / 0.08);
+  --sidebar-border: rgb(255 255 255 / 0.07);
+  --sidebar-indicator: #b69cf0;
+  --highlight: #ffd23f;
+  --highlight-foreground: #0e1116;
+  --success: #4ade80;
+  --success-text: #4ade80;
+  --warning: #fbbf24;
+  --warning-text: #fbbf24;
+  --danger: #f87171;
+  --danger-foreground: #0e1116;
+  --info: #a599f5;
+
+  --palette-teal: #2dd4bf;
+  --palette-coral: #ff7a80;
+  --palette-yellow: #ffd23f;
+  --palette-violet: #a599f5;
+  --palette-sky: #38bdf8;
+  --palette-pink: #f472b6;
+  --palette-lime: #a3e635;
+  --palette-orange: #fb923c;
+  --palette-indigo: #818cf8;
+  --palette-slate: #94a3b8;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-foreground: var(--text);
+  --color-muted: var(--muted);
+  --color-muted-on-background: var(--muted-on-background);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-text: var(--accent-text);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-success: var(--success);
+  --color-success-text: var(--success-text);
+  --color-warning: var(--warning);
+  --color-warning-text: var(--warning-text);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info: var(--info);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-deep: var(--sidebar-deep);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-heading: var(--sidebar-heading);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-selected: var(--sidebar-selected);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-indicator: var(--sidebar-indicator);
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

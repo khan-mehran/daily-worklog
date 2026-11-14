@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.next-e2e/
+out/
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+.data/
+test-results/
+playwright-report/
+e2e/.auth/
