@@ -5,7 +5,7 @@ import * as archiveRoute from "@/app/api/departments/[id]/archive/route";
 import * as restoreRoute from "@/app/api/departments/[id]/restore/route";
 import * as managerRoute from "@/app/api/departments/[id]/manager/route";
 import { sendEmailSafely } from "@/lib/email";
-import { AuditLog, Department, Notification, User, WeeklyReport } from "@/models";
+import { prisma } from "@/lib/db/prisma";
 import { call, makeCompany, makeUser, request, resetDatabase, signInAs } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
@@ -33,59 +33,57 @@ describe("Add Department", () => {
   });
 
   it("assigns an existing unassigned manager and notifies them", async () => {
-    const manager = await makeUser("MANAGER", null, company.ceo._id, "Free Manager");
+    const manager = await makeUser("MANAGER", null, company.ceo.id, "Free Manager");
     const { status, body } = await post(
-      newDepartment({ mode: "existing", userId: String(manager._id) }),
+      newDepartment({ mode: "existing", userId: manager.id }),
     );
     expect(status).toBe(201);
 
-    const department = await Department.findById(body.data.id).lean();
+    const department = await prisma.department.findUnique({ where: { id: body.data.id } });
     expect(department?.code).toBe("OPS");
-    expect(String(department?.managerId)).toBe(String(manager._id));
-    expect(String((await User.findById(manager._id).lean())?.departmentId)).toBe(body.data.id);
+    expect(String(department?.managerId)).toBe(manager.id);
+    expect(String((await prisma.user.findUnique({ where: { id: manager.id } }))?.departmentId)).toBe(body.data.id);
 
-    const notification = await Notification.findOne({ recipientId: manager._id }).lean();
+    const notification = await prisma.notification.findFirst({ where: { recipientId: manager.id } });
     expect(notification?.type).toBe("DEPARTMENT_ASSIGNED");
     expect(String(notification?.departmentId)).toBe(body.data.id);
     expect(sendEmailSafely).toHaveBeenCalledOnce();
-    expect(await AuditLog.countDocuments({ action: "department.create" })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "department.create" } })).toBe(1);
   });
 
-  it("creates a new manager inline and emails an invite, storing only the token's hash", async () => {
+  it("creates a new manager inline, approved, and emails them to sign in with Microsoft", async () => {
     const { status, body } = await post(
       newDepartment({ mode: "new", name: "New Boss", email: "Boss@Test.local" }),
     );
     expect(status).toBe(201);
 
-    const manager = await User.findOne({ email: "boss@test.local" })
-      .select("+inviteTokenHash +passwordHash")
-      .lean();
+    const manager = await prisma.user.findFirst({ where: { email: "boss@test.local" } });
     expect(manager?.role).toBe("MANAGER");
     expect(String(manager?.departmentId)).toBe(body.data.id);
-    expect(String(manager?.reportsTo)).toBe(String(company.ceo._id));
-    expect(manager?.passwordHash).toBeNull();
-    expect(manager?.inviteTokenHash).toMatch(/^[a-f\d]{64}$/);
+    expect(String(manager?.reportsTo)).toBe(company.ceo.id);
+    expect(manager?.approval).toBe("APPROVED");
 
     const mail = vi.mocked(sendEmailSafely).mock.calls[0]![0];
     expect(mail.to).toBe("boss@test.local");
-    const token = /\/invite\/([a-f\d]{64})/.exec(mail.text)![1]!;
-    expect(token).not.toBe(manager?.inviteTokenHash);
+    expect(mail.subject).toBe("You've been added to GET List");
+    expect(mail.text).toContain("Sign in with your Microsoft account");
+    expect(mail.text).toContain("/login");
   });
 
   it.each([
-    ["a manager who already has a department", (c: Company) => String(c.it.manager._id)],
-    ["someone who isn't a manager", (c: Company) => String(c.it.developer._id)],
+    ["a manager who already has a department", (c: Company) => c.it.manager.id],
+    ["someone who isn't a manager", (c: Company) => c.it.developer.id],
   ])("refuses %s", async (_label, userId) => {
     const { status } = await post(newDepartment({ mode: "existing", userId: userId(company) }));
     expect(status).toBe(400);
-    expect(await Department.countDocuments()).toBe(2);
+    expect(await prisma.department.count()).toBe(2);
   });
 
   it("refuses a deactivated manager", async () => {
-    const manager = await makeUser("MANAGER", null, company.ceo._id);
-    await User.updateOne({ _id: manager._id }, { isActive: false });
+    const manager = await makeUser("MANAGER", null, company.ceo.id);
+    await prisma.user.updateMany({ where: { id: manager.id }, data: { isActive: false } });
     const { status } = await post(
-      newDepartment({ mode: "existing", userId: String(manager._id) }),
+      newDepartment({ mode: "existing", userId: manager.id }),
     );
     expect(status).toBe(400);
   });
@@ -98,7 +96,7 @@ describe("Add Department", () => {
       newDepartment({ mode: "new", name: "Orphan", email: "orphan@test.local" }, overrides),
     );
     expect(status).toBe(409);
-    expect(await User.exists({ email: "orphan@test.local" })).toBeNull();
+    expect(await prisma.user.findFirst({ where: { email: "orphan@test.local" } })).toBeNull();
   });
 
   it("refuses an email that's already in use", async () => {
@@ -119,13 +117,13 @@ describe("Add Department", () => {
 
   it("the database itself rejects two departments with one manager", async () => {
     await expect(
-      Department.create({
+      prisma.department.create({ data: {
         name: "Second",
         code: "SECOND",
         color: "teal",
-        managerId: company.it.manager._id,
-      }),
-    ).rejects.toMatchObject({ code: 11000 });
+        managerId: company.it.manager.id,
+      } }),
+    ).rejects.toMatchObject({ code: "P2002" });
   });
 });
 
@@ -139,44 +137,41 @@ describe("managing a department", () => {
     signInAs(company.ceo);
   });
 
-  const id = () => String(company.it.department._id);
+  const id = () => company.it.department.id;
 
   it("changing the manager moves team leads and open reviews, and frees the old manager", async () => {
-    const next = await makeUser("MANAGER", null, company.ceo._id, "Next Manager");
-    await WeeklyReport.updateOne(
-      { _id: company.it.report._id },
-      { status: "LEAD_APPROVED", currentApproverId: company.it.manager._id },
-    );
+    const next = await makeUser("MANAGER", null, company.ceo.id, "Next Manager");
+    await prisma.weeklyReport.updateMany({ where: { id: company.it.report.id }, data: { status: "LEAD_APPROVED", currentApproverId: company.it.manager.id } });
 
     const { status } = await call(
       managerRoute.POST,
       request("POST", `/api/departments/${id()}/manager`, {
-        body: { mode: "existing", userId: String(next._id) },
+        body: { mode: "existing", userId: next.id },
       }),
       { id: id() },
     );
     expect(status).toBe(200);
 
-    const department = await Department.findById(id()).lean();
-    expect(String(department?.managerId)).toBe(String(next._id));
-    expect(String((await User.findById(next._id).lean())?.departmentId)).toBe(id());
-    expect(String((await User.findById(company.it.lead._id).lean())?.reportsTo)).toBe(
-      String(next._id),
+    const department = await prisma.department.findUnique({ where: { id: id() } });
+    expect(String(department?.managerId)).toBe(next.id);
+    expect(String((await prisma.user.findUnique({ where: { id: next.id } }))?.departmentId)).toBe(id());
+    expect(String((await prisma.user.findUnique({ where: { id: company.it.lead.id } }))?.reportsTo)).toBe(
+      next.id,
     );
-    expect((await User.findById(company.it.manager._id).lean())?.departmentId).toBeNull();
-    expect(String((await WeeklyReport.findById(company.it.report._id).lean())?.currentApproverId)).toBe(
-      String(next._id),
+    expect((await prisma.user.findUnique({ where: { id: company.it.manager.id } }))?.departmentId).toBeNull();
+    expect(String((await prisma.weeklyReport.findUnique({ where: { id: company.it.report.id } }))?.currentApproverId)).toBe(
+      next.id,
     );
-    expect(await Notification.exists({ recipientId: company.it.manager._id, type: "DEPARTMENT_UNASSIGNED" })).toBeTruthy();
-    expect(await Notification.exists({ recipientId: next._id, type: "DEPARTMENT_ASSIGNED" })).toBeTruthy();
+    expect(await prisma.notification.findFirst({ where: { recipientId: company.it.manager.id, type: "DEPARTMENT_UNASSIGNED" } })).toBeTruthy();
+    expect(await prisma.notification.findFirst({ where: { recipientId: next.id, type: "DEPARTMENT_ASSIGNED" } })).toBeTruthy();
   });
 
   it("the previous manager immediately loses access to the department", async () => {
-    const next = await makeUser("MANAGER", null, company.ceo._id);
+    const next = await makeUser("MANAGER", null, company.ceo.id);
     await call(
       managerRoute.POST,
       request("POST", `/api/departments/${id()}/manager`, {
-        body: { mode: "existing", userId: String(next._id) },
+        body: { mode: "existing", userId: next.id },
       }),
       { id: id() },
     );
@@ -198,10 +193,10 @@ describe("managing a department", () => {
 
   it("won't change the manager of an archived department", async () => {
     await call(archiveRoute.POST, request("POST", "/x"), { id: id() });
-    const next = await makeUser("MANAGER", null, company.ceo._id);
+    const next = await makeUser("MANAGER", null, company.ceo.id);
     const { status } = await call(
       managerRoute.POST,
-      request("POST", "/x", { body: { mode: "existing", userId: String(next._id) } }),
+      request("POST", "/x", { body: { mode: "existing", userId: next.id } }),
       { id: id() },
     );
     expect(status).toBe(400);
@@ -213,7 +208,7 @@ describe("managing a department", () => {
     });
     expect(status).toBe(409);
     expect(body.error.code).toBe("DEPARTMENT_HAS_DATA");
-    expect(await Department.exists({ _id: id() })).toBeTruthy();
+    expect(await prisma.department.findFirst({ where: { id: id() } })).toBeTruthy();
   });
 
   it("deletes an empty department and frees its manager", async () => {
@@ -224,13 +219,13 @@ describe("managing a department", () => {
       id: created.body.data.id,
     });
     expect(status).toBe(200);
-    expect((await User.findOne({ email: "short@test.local" }).lean())?.departmentId).toBeNull();
+    expect((await prisma.user.findFirst({ where: { email: "short@test.local" } }))?.departmentId).toBeNull();
   });
 
   it("reports stats and leaves other departments out of them", async () => {
     const { body } = await call(departmentsRoute.GET, request("GET", "/api/departments"));
     const it_ = body.data.find((row: { code: string }) => row.code === "IT");
     expect(it_).toMatchObject({ headcount: 4, activeProjects: 1 });
-    expect(it_.manager.id).toBe(String(company.it.manager._id));
+    expect(it_.manager.id).toBe(company.it.manager.id);
   });
 });

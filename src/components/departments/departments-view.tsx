@@ -35,6 +35,7 @@ function DepartmentCard({ department }: { department: DepartmentSummary }) {
               className="size-7 text-[10px]"
             />
             <span className="truncate">{department.manager.name}</span>
+            {department.ledBySuperAdmin ? <Badge className="text-muted">Super Admin</Badge> : null}
           </>
         ) : (
           <span className="text-muted">No manager assigned</span>

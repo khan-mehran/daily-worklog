@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   // Keeps the test build's memory use low, so it can run beside other dev servers.
   ...(process.env.NEXT_DIST_DIR ? { experimental: { cpus: 1, webpackBuildWorker: false } } : {}),
   poweredByHeader: false,
-  serverExternalPackages: ["mongoose", "nodemailer", "bcryptjs"],
+  serverExternalPackages: ["@prisma/client"],
   async headers() {
     return [
       {

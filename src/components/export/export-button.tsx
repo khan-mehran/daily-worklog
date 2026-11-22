@@ -14,6 +14,7 @@ import { Select } from "@/components/ui/select";
 import { api } from "@/lib/api-client";
 import { REPORT_STATUS_LABELS, REPORT_STATUSES, type Role } from "@/lib/constants";
 import type { ProjectSummary } from "@/lib/projects/service";
+import { seesAllDepartments } from "@/lib/constants";
 
 async function download(url: string) {
   const response = await fetch(url);
@@ -21,7 +22,7 @@ async function download(url: string) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.error?.message ?? "The export failed. Please try again.");
   }
-  const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "worklog.xlsx";
+  const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "getl.xlsx";
   const link = document.createElement("a");
   link.href = URL.createObjectURL(await response.blob());
   link.download = name;
@@ -81,7 +82,7 @@ export function ExportButton({ role }: { role: Role }) {
         onOpenChange={setOpen}
         title="Export to Excel"
         description={
-          role === "CEO"
+          seesAllDepartments(role)
             ? "Fully approved work. Use the department switcher to export one department."
             : "Work in your department that has reached you."
         }

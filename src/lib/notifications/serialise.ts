@@ -1,8 +1,8 @@
-import type { INotification } from "@/models";
+import type { Notification } from "@prisma/client";
 
-export function serialiseNotification(notification: INotification) {
+export function serialiseNotification(notification: Notification) {
   return {
-    id: String(notification._id),
+    id: notification.id,
     type: notification.type,
     title: notification.title,
     message: notification.message,

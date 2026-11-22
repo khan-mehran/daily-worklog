@@ -58,7 +58,7 @@ export function TasksView({ exportSlot }: { exportSlot?: React.ReactNode }) {
 
   useEffect(() => {
     function onKey(event: globalThis.KeyboardEvent) {
-      if (event.key.toLowerCase() !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key?.toLowerCase() !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTyping(event.target) || document.querySelector("[role=dialog]")) return;
       event.preventDefault();
       setDialog({ open: true });

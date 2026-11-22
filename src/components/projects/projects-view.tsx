@@ -17,11 +17,13 @@ import type { ProjectSummary } from "@/lib/projects/service";
 import { formatDay } from "@/lib/utils";
 import { ProjectStatusBadge } from "./project-badges";
 import { PROJECTS_KEY, ProjectDialog } from "./project-dialogs";
+import { seesAllDepartments } from "@/lib/constants";
 
 const PAGE_SIZE = 12;
 const VISIBLE_AVATARS = 4;
 
 const DESCRIPTIONS: Record<Role, string> = {
+  SUPER_ADMIN: "Every project across all departments. Projects are managed by their departments.",
   CEO: "Every project across all departments. Projects are managed by their departments.",
   MANAGER: "All of your department's projects.",
   TEAM_LEAD: "All of your department's projects.",
@@ -91,7 +93,16 @@ function ProjectCard({ project, showDepartment }: { project: ProjectSummary; sho
   );
 }
 
-export function ProjectsView({ role, canManage }: { role: Role; canManage: boolean }) {
+export function ProjectsView({
+  role,
+  canManage,
+  departmentId,
+}: {
+  role: Role;
+  canManage: boolean;
+  /** The department new projects go to. Null for people who can't add any. */
+  departmentId: string | null;
+}) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
@@ -122,7 +133,12 @@ export function ProjectsView({ role, canManage }: { role: Role; canManage: boole
 
   return (
     <>
-      <PageHeader title="Projects" description={DESCRIPTIONS[role]} actions={addButton} />
+      <PageHeader title="Projects" description={
+          role === "SUPER_ADMIN" && canManage
+            ? "Every project across all departments. You add and manage the projects of the department you lead."
+            : DESCRIPTIONS[role]
+        }
+        actions={addButton} />
 
       <div className="mb-4 flex flex-wrap gap-2">
         <div className="relative min-w-52 flex-1 sm:max-w-sm">
@@ -192,7 +208,7 @@ export function ProjectsView({ role, canManage }: { role: Role; canManage: boole
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {data?.data.map((project) => (
-            <ProjectCard key={project.id} project={project} showDepartment={role === "CEO"} />
+            <ProjectCard key={project.id} project={project} showDepartment={seesAllDepartments(role)} />
           ))}
         </div>
       )}
@@ -209,6 +225,7 @@ export function ProjectsView({ role, canManage }: { role: Role; canManage: boole
         <ProjectDialog
           open={adding}
           onOpenChange={setAdding}
+          departmentId={departmentId}
           onCreated={(id) => router.push(`/projects/${id}`)}
         />
       ) : null}

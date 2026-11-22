@@ -4,7 +4,7 @@ import { authConfig } from "@/lib/auth/config";
 
 const { auth } = NextAuth(authConfig);
 
-const PUBLIC_PREFIXES = ["/login", "/invite"];
+const PUBLIC_PREFIXES = ["/login"];
 
 // Page routes only. API routes authenticate in authedRoute and answer with JSON errors.
 export default auth((req) => {

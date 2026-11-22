@@ -1,10 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { testDatabaseUrl } from "./scripts/test-db";
 
 // A dedicated port, so these tests can never run against another app on the default port 3000.
 const PORT = 3100;
 const BASE_URL = `http://localhost:${PORT}`;
-// These tests reseed and change data, so they use their own database and never your dev data.
-export const E2E_MONGODB_URI = process.env.E2E_MONGODB_URI ?? "mongodb://127.0.0.1:27017/worklog_e2e";
+// These tests reseed and change data, so they use their own database and never your dev data:
+// by default the development database's name with "_e2e" added.
+export const E2E_DATABASE_URL = testDatabaseUrl("e2e", "E2E_DATABASE_URL");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -20,6 +22,12 @@ export default defineConfig({
     url: `${BASE_URL}/login`,
     reuseExistingServer: false,
     timeout: 400_000,
-    env: { APP_URL: BASE_URL, MONGODB_URI: E2E_MONGODB_URI, NEXT_DIST_DIR: ".next-e2e" },
+    env: {
+      APP_URL: BASE_URL,
+      DATABASE_URL: E2E_DATABASE_URL,
+      NEXT_DIST_DIR: ".next-e2e",
+      // Browser tests sign in with passwords and must never send real mail.
+      SENDGRID_API_KEY: "",
+    },
   },
 });

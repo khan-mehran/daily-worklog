@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-// WorkLog daily sync: turns today's git activity into tasks on your WorkLog Tasks page.
+// WorkLog daily sync: turns today's git activity into tasks on your GET List Tasks page.
 //
 //   node worklog-sync.mjs              sync today
 //   node worklog-sync.mjs --date 2026-11-12
 //   node worklog-sync.mjs --dry-run    show what would be sent, send nothing
+//   node worklog-sync.mjs --setup --url https://teamwork.qa
+//                                      do everything, from inside a repo: copy this script to
+//                                      ~/.worklog, create a token (you approve it in the browser),
+//                                      write config.json, link the repo to its GET List project in
+//                                      .worklog.json (--project CODE to choose it yourself), and --install
 //   node worklog-sync.mjs --install    run it every day at 18:00 (--time 17:30 to change), and add
 //                                      the /worklog command to Claude Code
 //   node worklog-sync.mjs --uninstall  stop the daily run
@@ -20,14 +25,18 @@
 //     "repos": ["D:/Other/repo", { "path": "D:/x", "project": "ABC" }],
 //     "author": "you@company.com"            // optional; defaults to each repo's git user.email
 //   }
-// Each repo names its WorkLog project in .worklog.json: { "project": "ABC" }
+// Each repo names its GET List project in .worklog.json: { "project": "ABC", "name": "Project name" }
+// (--setup writes it; only "project" is read)
 //
 // Only commit messages and file paths are sent, never code. Needs Node 20+ and git.
 
-import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { execFile, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { homedir, hostname, platform } from "node:os";
+import { basename, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 const HOME_DIR = join(homedir(), ".worklog");
@@ -86,13 +95,13 @@ function readJson(path) {
 function worklogCommand(script) {
   const run = `node "${script.replaceAll("\\", "/")}"`;
   return `---
-description: Write today's work list for each project and send it to WorkLog
+description: Write today's work list for each project and send it to GET List
 argument-hint: "[YYYY-MM-DD]"
 allowed-tools: Bash(node:*), Bash(git:*)
 ---
-Write my work list for $ARGUMENTS (today if empty) and send it to WorkLog. Don't ask me to confirm; I can edit the tasks in WorkLog afterwards.
+Write my work list for $ARGUMENTS (today if empty) and send it to GET List. Don't ask me to confirm; I can edit the tasks in GET List afterwards.
 
-1. Run \`${run} --activity\` (add \`--date YYYY-MM-DD\` if a date was given). It prints JSON: for each WorkLog project code, its repo paths, the day's commits (hash and subject) and uncommitted files.
+1. Run \`${run} --activity\` (add \`--date YYYY-MM-DD\` if a date was given). It prints JSON: for each GET List project code, its repo paths, the day's commits (hash and subject) and uncommitted files.
 2. For each project, find out what was actually done. Use \`git -C <path> show --stat <hash>\`, then read the diffs that matter with \`git -C <path> show <hash>\` and, for uncommitted work, \`git -C <path> diff HEAD\`. Also use what we did together in this conversation.
 3. Write the list for each project.
 
@@ -116,18 +125,28 @@ Rules:
 `;
 }
 
-function installCommand() {
+function installCommand(script) {
   mkdirSync(join(homedir(), ".claude", "commands"), { recursive: true });
-  writeFileSync(COMMAND_PATH, worklogCommand(fileURLToPath(import.meta.url)));
+  writeFileSync(COMMAND_PATH, worklogCommand(script));
   log(`Installed the /worklog command for Claude Code (${COMMAND_PATH}).`);
 }
 
-function install() {
-  installCommand();
+function isScheduled() {
+  try {
+    execFileSync("schtasks", ["/Query", "/TN", TASK_NAME], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `keepSchedule` leaves an existing daily run alone, so running --setup again doesn't reset its time. */
+function install(script = fileURLToPath(import.meta.url), keepSchedule = false) {
+  installCommand(script);
   const time = option("--time") ?? "18:00";
   if (!/^\d{2}:\d{2}$/.test(time)) fail("Use --time HH:MM, for example --time 17:30.");
-  const script = fileURLToPath(import.meta.url);
   if (platform() === "win32") {
+    if (keepSchedule && !option("--time") && isScheduled()) return log(`"${TASK_NAME}" is already scheduled.`);
     execFileSync(
       "schtasks",
       ["/Create", "/F", "/SC", "DAILY", "/ST", time, "/TN", TASK_NAME, "/TR", `"${process.execPath}" "${script}"`],
@@ -214,7 +233,7 @@ function repoActivity(repo, day, author) {
 
 function loadConfig() {
   const config = readJson(CONFIG_PATH);
-  if (!config) fail(`No config at ${CONFIG_PATH}. See the setup steps in WorkLog → Settings → VS Code sync.`);
+  if (!config) fail(`No config at ${CONFIG_PATH}. See the setup steps in GET List → Settings → VS Code sync.`);
   if (!config.url || !config.token) fail(`${CONFIG_PATH} needs "url" and "token".`);
   return config;
 }
@@ -225,7 +244,7 @@ function selectedDay() {
   return day;
 }
 
-/** The day's activity per WorkLog project. Several repos with one project code are merged. */
+/** The day's activity per GET List project. Several repos with one project code are merged. */
 function collectActivity(config, day) {
   const byProject = new Map();
   for (const repo of discoverRepos(config)) {
@@ -313,7 +332,194 @@ async function sendItems(source) {
   await send(config, { date: input.date ?? selectedDay(), projects });
 }
 
-if (flag("--install")) install();
+// --- Setup: one command that connects this computer and links the current repo. ---
+
+const SETUP_SCRIPT = join(HOME_DIR, "worklog-sync.mjs");
+const CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
+
+function openBrowser(url) {
+  const [command, commandArgs] =
+    platform() === "win32"
+      ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
+      : platform() === "darwin"
+        ? ["open", [url]]
+        : ["xdg-open", [url]];
+  // If no browser opens, the printed link still works.
+  execFile(command, commandArgs, () => {});
+}
+
+const closingPage = (title, message) =>
+  `<!doctype html><meta charset="utf-8"><title>GET List</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem"><h1 style="font-size:1.25rem">${title}</h1><p>${message}</p></body>`;
+
+/**
+ * Gets a token without copy and paste. GET List's /connect page, where you are signed in, creates
+ * the token when you press Connect and posts it to this one-off listener on 127.0.0.1. `state`
+ * proves the post answers this run.
+ */
+function connect(url) {
+  const state = randomBytes(24).toString("base64url");
+  return new Promise((resolveToken) => {
+    const server = createServer((req, res) => {
+      if (req.method !== "POST" || req.url !== "/callback") return res.writeHead(404).end();
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 4096) req.destroy();
+      });
+      req.on("end", () => {
+        const form = new URLSearchParams(body);
+        const token = form.get("token") ?? "";
+        const ok = form.get("state") === state && /^wlk_[\w-]{20,}$/.test(token);
+        res.writeHead(ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
+        res.end(
+          ok
+            ? closingPage("This computer is connected to GET List", "You can close this tab and go back to the terminal.")
+            : closingPage("That didn't work", "Run the setup command again."),
+        );
+        if (!ok) return;
+        clearTimeout(timer);
+        server.close();
+        resolveToken(token);
+      });
+    });
+    const timer = setTimeout(() => fail("Nobody pressed Connect within 5 minutes. Run the setup command again."), CONNECT_TIMEOUT_MS);
+    server.listen(0, "127.0.0.1", () => {
+      const link = new URL("/connect", url);
+      link.searchParams.set("port", String(server.address().port));
+      link.searchParams.set("state", state);
+      link.searchParams.set("name", hostname().slice(0, 60));
+      console.log(`Opening GET List in your browser. Sign in if asked, then press Connect.\nIf nothing opens, go to:\n  ${link}`);
+      openBrowser(link.href);
+    });
+  });
+}
+
+/** The projects this token's owner can log work on: [{ code, name }]. Null when the token isn't accepted. */
+async function fetchProjects(url, token) {
+  const response = await fetch(new URL("/api/integrations/projects", url), {
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch((error) => fail(`Couldn't reach ${url}: ${error.message}`));
+  if (response.status === 401) return null;
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) fail(`${response.status} ${payload?.error?.message ?? response.statusText}`);
+  return payload.data;
+}
+
+const simplify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** The one project whose code or name matches the repo's folder or remote name, or null. */
+function detectProject(repo, projects) {
+  const names = [basename(repo)];
+  try {
+    names.push(basename(git(repo, ["config", "--get", "remote.origin.url"]).trim()).replace(/\.git$/, ""));
+  } catch {
+    // No remote.
+  }
+  const candidates = names.map(simplify).filter(Boolean);
+  const exact = projects.filter((project) =>
+    candidates.some((name) => name === simplify(project.code) || name === simplify(project.name)),
+  );
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const partial = projects.filter((project) => {
+    const projectName = simplify(project.name);
+    return (
+      projectName.length >= 3 &&
+      candidates.some((name) => name.length >= 3 && (name.includes(projectName) || projectName.includes(name)))
+    );
+  });
+  return partial.length === 1 ? partial[0] : null;
+}
+
+async function askForProject(repo, projects) {
+  const list = projects.map((project, index) => `  ${index + 1}. ${project.code}  ${project.name}`).join("\n");
+  if (!process.stdin.isTTY) {
+    log(`Couldn't tell which project ${repo} belongs to. Run --setup again with --project CODE:\n${list}`);
+    return null;
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    for (;;) {
+      const answer = (
+        await prompt.question(`Which GET List project is ${basename(repo)}?\n${list}\nNumber or code (Enter to skip): `)
+      ).trim();
+      if (!answer) return null;
+      const chosen = projects[Number(answer) - 1] ?? projects.find((project) => project.code === answer.toUpperCase());
+      if (chosen) return chosen;
+    }
+  } finally {
+    prompt.close();
+  }
+}
+
+/** Writes the repo's .worklog.json and makes sure the daily run will find the repo. */
+async function linkRepo(repo, projects, config) {
+  const linkPath = join(repo, ".worklog.json");
+  const byCode = (code) => projects.find((project) => project.code === String(code ?? "").toUpperCase());
+  const requested = option("--project");
+  if (requested && !byCode(requested)) {
+    const codes = projects.map((project) => project.code).join(", ");
+    fail(`No project with code ${requested} that you can log work on. Yours: ${codes}.`);
+  }
+  const current = byCode(readJson(linkPath)?.project);
+  const project =
+    byCode(requested) ??
+    current ??
+    detectProject(repo, projects) ??
+    // Someone on a single project has nothing to choose between.
+    (projects.length === 1 ? projects[0] : await askForProject(repo, projects));
+  if (!project) return log(`${repo} isn't linked to a project yet.`);
+  // Only "project" is read. "name" is there so people can see which project the code means.
+  const link = `{ "project": ${JSON.stringify(project.code)}, "name": ${JSON.stringify(project.name)} }\n`;
+  if (!existsSync(linkPath) || readFileSync(linkPath, "utf8") !== link) writeFileSync(linkPath, link);
+  log(`${repo} is linked to ${project.code} (${project.name}).`);
+
+  const found = discoverRepos(config).some((entry) => entry.path.toLowerCase() === repo.toLowerCase());
+  if (!found) config.repos = [...(config.repos ?? []), repo.replaceAll("\\", "/")];
+}
+
+async function setup() {
+  mkdirSync(HOME_DIR, { recursive: true });
+  const self = fileURLToPath(import.meta.url);
+  if (resolve(self).toLowerCase() !== SETUP_SCRIPT.toLowerCase()) copyFileSync(self, SETUP_SCRIPT);
+
+  const config = readJson(CONFIG_PATH) ?? {};
+  const url = String(option("--url") ?? config.url ?? "").replace(/\/+$/, "");
+  if (!/^https?:\/\/\S+$/.test(url)) fail("Say where GET List is: --setup --url https://your-getl-address");
+  // A token belongs to the server that made it.
+  let token = config.url === url ? config.token : undefined;
+  let projects = token ? await fetchProjects(url, token) : null;
+  if (projects) {
+    log(`Already connected to ${url}.`);
+  } else {
+    token = await connect(url);
+    projects = await fetchProjects(url, token);
+    if (!projects) fail("GET List didn't accept the new token. Run the setup command again.");
+    log(`Connected to ${url}.`);
+  }
+  Object.assign(config, { url, token, scan: config.scan ?? [], repos: config.repos ?? [] });
+  const save = () => writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  save();
+
+  let repo = null;
+  try {
+    repo = resolve(git(process.cwd(), ["rev-parse", "--show-toplevel"]).trim());
+  } catch {
+    log("This folder isn't a git repo, so no project was linked. Run --setup again inside each repo.");
+  }
+  if (repo && projects.length === 0) {
+    log("You aren't assigned to an active project yet, so no project was linked.");
+  } else if (repo) {
+    await linkRepo(repo, projects, config);
+    save();
+  }
+
+  install(SETUP_SCRIPT, true);
+  log("Setup finished. Type /worklog in Claude Code at the end of the day. Run --setup again inside any other repo to link it.");
+}
+
+if (flag("--setup")) await setup();
+else if (flag("--install")) install();
 else if (flag("--uninstall")) uninstall();
 else if (flag("--activity")) printActivity();
 else if (option("--items")) await sendItems(option("--items"));

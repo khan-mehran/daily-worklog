@@ -13,8 +13,8 @@ import * as searchRoute from "@/app/api/search/route";
 import * as teamRoute from "@/app/api/team/route";
 import { setAiService } from "@/lib/ai";
 import { DEPARTMENT_FILTER_COOKIE } from "@/lib/constants";
-import { Task, WeeklyReport } from "@/models";
-import { call, FIXTURE_WEEK, makeCompany, request, resetDatabase, signInAs } from "./helpers";
+import { prisma } from "@/lib/db/prisma";
+import { call, FIXTURE_WEEK, makeCompany, reportTotals, request, resetDatabase, signInAs } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
 let company: Company;
@@ -31,24 +31,24 @@ beforeEach(async () => {
 /** A second IT developer task of `hours`, in a report at `status` within the fixture week. */
 async function otherDeveloperWork(status: "SUBMITTED" | "LEAD_APPROVED" | "MANAGER_APPROVED" | "DRAFT", hours: number) {
   const { department, project, otherDeveloper } = company.it;
-  const report = await WeeklyReport.create({
-    userId: otherDeveloper._id,
-    departmentId: department._id,
+  const report = await prisma.weeklyReport.create({ data: {
+    userId: otherDeveloper.id,
+    departmentId: department.id,
     ...FIXTURE_WEEK,
     status,
-    totals: { hours, taskCount: 1, completedCount: 1, blockedCount: 0, byProject: [{ projectId: project._id, hours, taskCount: 1 }] },
-  });
-  await Task.create({
-    userId: otherDeveloper._id,
-    departmentId: department._id,
-    projectId: project._id,
+    ...reportTotals(project.id, hours),
+  } });
+  await prisma.task.create({ data: {
+    userId: otherDeveloper.id,
+    departmentId: department.id,
+    projectId: project.id,
     date: FIXTURE_WEEK.weekStart,
     details: `${status} work`,
     hours,
     status: "Completed",
-    weeklyReportId: report._id,
+    weeklyReportId: report.id,
     reportStatus: status,
-  });
+  } });
 }
 
 describe("dashboards are role-guarded", () => {
@@ -82,7 +82,7 @@ describe("dashboards follow the approval gate", () => {
 
   it("the CEO's switcher narrows everything but the department comparison", async () => {
     signInAs(company.ceo);
-    const cookie = `${DEPARTMENT_FILTER_COOKIE}=${company.hr.department._id}`;
+    const cookie = `${DEPARTMENT_FILTER_COOKIE}=${company.hr.department.id}`;
     const { body } = await call(ceoRoute.GET, request("GET", `/x${range}`, { cookie }));
     expect(body.data.kpis.approvedHours).toBe(8);
     expect(body.data.byDepartment).toHaveLength(2);
@@ -114,10 +114,9 @@ describe("dashboards follow the approval gate", () => {
   });
 
   it("the activity feed never crosses departments", async () => {
-    await WeeklyReport.updateOne(
-      { _id: company.hr.report._id },
-      { approvalTrail: [{ action: "SUBMITTED", byUserId: company.hr.developer._id, at: new Date(), comment: null }] },
-    );
+    await prisma.reportTrailEntry.create({
+      data: { reportId: company.hr.report.id, action: "SUBMITTED", byUserId: company.hr.developer.id, at: new Date() },
+    });
     signInAs(company.it.manager);
     expect((await call(activityRoute.GET, request("GET", "/x"))).body.data).toEqual([]);
     signInAs(company.ceo);
@@ -144,7 +143,7 @@ describe("Excel export", () => {
 
   it("contains only the requester's department, with both sheets", async () => {
     signInAs(company.it.manager);
-    const response = await exportRoute.GET(request("GET", exportUrl(`&departmentId=${company.hr.department._id}`)), {
+    const response = await exportRoute.GET(request("GET", exportUrl(`&departmentId=${company.hr.department.id}`)), {
       params: Promise.resolve({}),
     });
     expect(response.headers.get("content-type")).toContain("spreadsheetml");
@@ -173,13 +172,13 @@ describe("Excel export", () => {
     const all = await readWorkbook(await exportRoute.GET(request("GET", exportUrl()), { params: Promise.resolve({}) }));
     expect(all.rows.slice(1).map((row) => row[5]).sort()).toEqual(["HR secret task", "IT secret task"]);
     const hr = await readWorkbook(
-      await exportRoute.GET(request("GET", exportUrl(`&departmentId=${company.hr.department._id}`)), { params: Promise.resolve({}) }),
+      await exportRoute.GET(request("GET", exportUrl(`&departmentId=${company.hr.department.id}`)), { params: Promise.resolve({}) }),
     );
     expect(hr.rows.slice(1).map((row) => row[5])).toEqual(["HR secret task"]);
   });
 
   it("lets only the owner download a weekly report", async () => {
-    const id = String(company.it.report._id);
+    const id = company.it.report.id;
     signInAs(company.it.lead);
     expect((await reportExportRoute.GET(request("GET", "/x"), { params: Promise.resolve({ id }) })).status).toBe(404);
     signInAs(company.it.developer);
@@ -230,7 +229,7 @@ describe("search and team", () => {
     signInAs(company.it.manager);
     const it_ = await call(searchRoute.GET, request("GET", "/api/search?q=project"));
     expect(it_.body.data.projects.map((row: { title: string }) => row.title)).toEqual(["IT project"]);
-    expect(it_.body.data.people.every((row: { id: string }) => row.id !== String(company.hr.developer._id))).toBe(true);
+    expect(it_.body.data.people.every((row: { id: string }) => row.id !== company.hr.developer.id)).toBe(true);
 
     signInAs(company.it.otherDeveloper);
     const dev = await call(searchRoute.GET, request("GET", "/api/search?q=project"));
@@ -243,7 +242,7 @@ describe("search and team", () => {
     signInAs(company.it.lead);
     const { body } = await call(teamRoute.GET, request("GET", "/api/team"));
     expect(body.data.map((row: { id: string }) => row.id).sort()).toEqual(
-      [String(company.it.developer._id), String(company.it.otherDeveloper._id)].sort(),
+      [company.it.developer.id, company.it.otherDeveloper.id].sort(),
     );
   });
 

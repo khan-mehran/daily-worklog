@@ -11,5 +11,5 @@ export const GET = authedRoute(async ({ req, user }) => {
 
 export const POST = authedRoute(async ({ req, user }) => {
   const task = await createTask(user, await parseBody(req, createTaskSchema));
-  return NextResponse.json({ data: { id: String(task._id) } }, { status: 201 });
+  return NextResponse.json({ data: { id: task.id } }, { status: 201 });
 });

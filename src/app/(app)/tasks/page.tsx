@@ -5,6 +5,7 @@ import { ExportButton } from "@/components/export/export-button";
 import { TasksView } from "@/components/tasks/tasks-view";
 import { Card, EmptyState, PageHeader } from "@/components/ui/misc";
 import { requirePageUser } from "@/lib/auth/page";
+import { ROLE_LABELS, seesAllDepartments } from "@/lib/constants";
 
 export const metadata: Metadata = { title: "Tasks" };
 
@@ -12,8 +13,8 @@ export default async function TasksPage() {
   const user = await requirePageUser();
   const canExport = user.role !== "DEVELOPER";
 
-  // The CEO reviews work and doesn't log any, so their Tasks page is the export.
-  if (user.role === "CEO") {
+  // The CEO and Super Admin don't log work, so their Tasks page is the export.
+  if (seesAllDepartments(user.role)) {
     return (
       <>
         <PageHeader
@@ -24,7 +25,7 @@ export default async function TasksPage() {
         <Card>
           <EmptyState
             icon={ListChecks}
-            title="The CEO doesn't log tasks"
+            title={`The ${ROLE_LABELS[user.role]} doesn't log tasks`}
             description="Approved work from every department is in the dashboard, on project pages and in the Excel export."
           />
         </Card>

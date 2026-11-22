@@ -1,57 +1,74 @@
-import { Types, type FilterQuery } from "mongoose";
+import type { Prisma } from "@prisma/client";
 import { forbidden } from "@/lib/api/errors";
+import { ORG_WIDE_ROLES, type PaletteColor } from "@/lib/constants";
+import { prisma } from "@/lib/db/prisma";
 import { scopeFor, type Actor } from "@/lib/permissions";
 import { isoWeekOf } from "@/lib/reports/iso-week";
 import { visibleReportsFilter } from "@/lib/reports/visibility";
-import { User, WeeklyReport, type IUser } from "@/models";
 
 /**
  * The people under someone, with their current week. A Team Lead gets their direct reports, a
- * Manager their department, the CEO everyone (or one department). Hours appear only when the
+ * Manager their department, the CEO and Super Admin everyone (or one department). Hours appear only when the
  * week has reached the viewer; otherwise just its status shows.
  */
 export async function listTeam(actor: Actor, selectedDepartmentId: string | null, page: number, limit: number) {
   if (actor.role === "DEVELOPER") throw forbidden();
-  const self = new Types.ObjectId(actor.id);
-  const filter: FilterQuery<IUser> =
+  const where: Prisma.UserWhereInput =
     actor.role === "TEAM_LEAD"
-      ? { ...scopeFor(actor), reportsTo: self, isActive: true }
-      : { ...scopeFor(actor, selectedDepartmentId), _id: { $ne: self }, role: { $ne: "CEO" }, isActive: true };
+      ? { ...scopeFor(actor), reportsTo: actor.id, isActive: true, approval: "APPROVED" }
+      : {
+          ...scopeFor(actor, selectedDepartmentId),
+          id: { not: actor.id },
+          role: { notIn: [...ORG_WIDE_ROLES] },
+          isActive: true,
+          approval: "APPROVED",
+        };
 
   const [people, total] = await Promise.all([
-    User.find(filter)
-      .sort({ role: 1, name: 1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .populate<{ reportsTo: { name: string } | null }>("reportsTo", "name")
-      .lean(),
-    User.countDocuments(filter),
+    prisma.user.findMany({
+      where,
+      // The Role enum is declared in seniority order, so managers come first.
+      orderBy: [{ role: "asc" }, { name: "asc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+      include: { approver: { select: { name: true } } },
+    }),
+    prisma.user.count({ where }),
   ]);
-  const ids = people.map((person) => person._id);
   const week = isoWeekOf(new Date());
-  const thisWeek = { userId: { $in: ids }, isoYear: week.isoYear, isoWeek: week.isoWeek };
+  const thisWeek = {
+    userId: { in: people.map((person) => person.id) },
+    isoYear: week.isoYear,
+    isoWeek: week.isoWeek,
+  };
   const [reports, visible] = await Promise.all([
-    WeeklyReport.find(thisWeek).select("userId status submittedAt").lean(),
-    WeeklyReport.find({ $and: [thisWeek, await visibleReportsFilter(actor)] }).select("userId totals.hours totals.blockedCount").lean(),
+    prisma.weeklyReport.findMany({
+      where: thisWeek,
+      select: { id: true, userId: true, status: true, submittedAt: true },
+    }),
+    prisma.weeklyReport.findMany({
+      where: { AND: [thisWeek, await visibleReportsFilter(actor)] },
+      select: { userId: true, totalHours: true, blockedCount: true },
+    }),
   ]);
 
   return {
     total,
     isoWeek: week.isoWeek,
     people: people.map((person) => {
-      const report = reports.find((item) => String(item.userId) === String(person._id));
-      const shown = visible.find((item) => String(item.userId) === String(person._id));
+      const report = reports.find((item) => item.userId === person.id);
+      const shown = visible.find((item) => item.userId === person.id);
       return {
-        id: String(person._id),
+        id: person.id,
         name: person.name,
         role: person.role,
-        avatarColor: person.avatarColor,
-        reportsTo: person.reportsTo?.name ?? null,
-        reportId: report ? String(report._id) : null,
+        avatarColor: person.avatarColor as PaletteColor,
+        reportsTo: person.approver?.name ?? null,
+        reportId: report?.id ?? null,
         status: report?.status ?? null,
         submittedAt: report?.submittedAt?.toISOString() ?? null,
-        hours: shown ? shown.totals.hours : null,
-        blocked: shown ? shown.totals.blockedCount : null,
+        hours: shown ? shown.totalHours : null,
+        blocked: shown ? shown.blockedCount : null,
       };
     }),
   };

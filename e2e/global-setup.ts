@@ -1,9 +1,11 @@
 import { execSync } from "node:child_process";
-import { E2E_MONGODB_URI } from "../playwright.config";
+import { prepareDatabase } from "../scripts/test-db";
+import { E2E_DATABASE_URL } from "../playwright.config";
 
-export default function globalSetup() {
+export default async function globalSetup() {
+  await prepareDatabase(E2E_DATABASE_URL);
   execSync("npm run seed", {
     stdio: "inherit",
-    env: { ...process.env, MONGODB_URI: E2E_MONGODB_URI },
+    env: { ...process.env, DATABASE_URL: E2E_DATABASE_URL },
   });
 }

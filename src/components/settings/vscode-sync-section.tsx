@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { Field, Input } from "@/components/ui/form";
 import { api } from "@/lib/api-client";
+import { copyText as copy, SyncSetupCommand } from "./sync-setup-command";
 
 interface TokenRow {
   id: string;
@@ -19,15 +20,6 @@ interface TokenRow {
 
 const TOKENS_KEY = ["me", "tokens"];
 const formatDate = (value: string) => new Date(value).toLocaleDateString(undefined, { dateStyle: "medium" });
-
-async function copy(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success("Copied.");
-  } catch {
-    toast.error("Couldn't copy. Select the text and copy it yourself.");
-  }
-}
 
 /** Personal API tokens and setup steps for the VS Code daily sync. */
 export function VsCodeSyncSection() {
@@ -64,6 +56,12 @@ export function VsCodeSyncSection() {
 
   return (
     <div className="space-y-5 text-sm">
+      <div className="space-y-2">
+        <p className="font-medium">Quick setup</p>
+        <SyncSetupCommand />
+      </div>
+
+      <p className="font-medium">Or set it up by hand</p>
       <ol className="text-muted list-decimal space-y-1.5 pl-5">
         <li>
           Download{" "}

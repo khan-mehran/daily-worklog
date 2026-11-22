@@ -1,6 +1,7 @@
-import { connectDB } from "@/lib/db/connect";
 import type { PaletteColor, Role, ThemePreference } from "@/lib/constants";
-import { User } from "@/models";
+import { prisma } from "@/lib/db/prisma";
+import { maySignIn } from "@/lib/permissions";
+import { isId } from "@/validators/common";
 import { auth } from "./index";
 
 export interface CurrentUser {
@@ -28,19 +29,27 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   return loadActiveUser(session.user.id);
 }
 
-/** An active user by id, in the CurrentUser shape. Null for unknown or deactivated users. */
+/**
+ * An approved, active user by id, in the CurrentUser shape. Null for anyone else: unknown,
+ * deactivated, still waiting for approval, or rejected.
+ */
 export async function loadActiveUser(id: string): Promise<CurrentUser | null> {
-  await connectDB();
-  const user = await User.findById(id).lean();
-  if (!user || !user.isActive) return null;
+  // A session cookie from before the move to PostgreSQL carries an id that can't exist here.
+  if (!isId(id)) return null;
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user || !maySignIn(user)) return null;
   return {
-    id: String(user._id),
+    id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
-    departmentId: user.departmentId ? String(user.departmentId) : null,
-    reportsTo: user.reportsTo ? String(user.reportsTo) : null,
-    avatarColor: user.avatarColor,
-    preferences: user.preferences,
+    departmentId: user.departmentId,
+    reportsTo: user.reportsTo,
+    avatarColor: user.avatarColor as PaletteColor,
+    preferences: {
+      theme: user.theme,
+      emailNotifications: user.emailNotifications,
+      inAppNotifications: user.inAppNotifications,
+    },
   };
 }

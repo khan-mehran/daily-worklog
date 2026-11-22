@@ -23,7 +23,7 @@ interface DateRange {
   to: string;
 }
 
-const STORAGE_KEY = "worklog-date-range";
+const STORAGE_KEY = "getl-date-range";
 const day = (date: Date) => format(date, "yyyy-MM-dd");
 
 const PRESETS: { id: Exclude<Preset, "custom">; label: string; from: (now: Date) => Date }[] = [

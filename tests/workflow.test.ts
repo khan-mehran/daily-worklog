@@ -176,3 +176,48 @@ describe("whole chains", () => {
 // Keeps the role type referenced so the fixtures above stay in sync with it.
 const roles: Role[] = [ceo.role, manager.role, lead.role, dev.role];
 void roles;
+
+describe("when Team Leads are exempt from reviewing", () => {
+  const exempt = { teamLeadReview: false, departmentManagerId: "manager" };
+
+  it("sends a developer's report straight to the department's Manager", () => {
+    expect(nextTransition(report("DRAFT"), dev, dev, "submit", null, exempt)).toMatchObject({
+      status: "SUBMITTED",
+      currentApproverId: "manager",
+    });
+  });
+
+  it("makes the Manager's approval of it final", () => {
+    expect(nextTransition(report("SUBMITTED", "manager"), dev, manager, "approve", null, exempt)).toEqual({
+      status: "MANAGER_APPROVED",
+      currentApproverId: null,
+      trailAction: "MANAGER_APPROVED",
+      timestamp: "managerApprovedAt",
+    });
+  });
+
+  it("doesn't let the Team Lead review it", () => {
+    expect(() => nextTransition(report("SUBMITTED", "manager"), dev, lead, "approve", null, exempt)).toThrow(
+      expect.objectContaining({ code: "NOT_ALLOWED" }),
+    );
+  });
+
+  it("still sends a Team Lead's own report to the Manager", () => {
+    expect(nextTransition(report("DRAFT"), lead, lead, "submit", null, exempt)).toMatchObject({
+      currentApproverId: "manager",
+    });
+  });
+
+  it("needs the department to have a Manager", () => {
+    expect(() =>
+      nextTransition(report("DRAFT"), dev, dev, "submit", null, { teamLeadReview: false, departmentManagerId: null }),
+    ).toThrow(expect.objectContaining({ code: "NO_APPROVER" }));
+  });
+
+  it("lets a Team Lead finish a review that reached them before the change", () => {
+    expect(nextTransition(report("SUBMITTED", "lead"), dev, lead, "approve", null, exempt)).toMatchObject({
+      status: "LEAD_APPROVED",
+      currentApproverId: "manager",
+    });
+  });
+});

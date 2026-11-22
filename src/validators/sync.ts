@@ -10,7 +10,7 @@ const MAX_FILES = 200;
 
 const filePath = z.string().trim().min(1).max(300);
 
-/** One day of git activity from the VS Code sync, grouped by WorkLog project code. */
+/** One day of git activity from the VS Code sync, grouped by GET List project code. */
 export const dailySyncSchema = z.object({
   date: daySchema,
   projects: z

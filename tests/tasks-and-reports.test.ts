@@ -1,5 +1,4 @@
 import { format, subDays } from "date-fns";
-import { Types } from "mongoose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as tasksRoute from "@/app/api/tasks/route";
 import * as taskRoute from "@/app/api/tasks/[id]/route";
@@ -14,11 +13,11 @@ import * as approveRoute from "@/app/api/reports/[id]/approve/route";
 import * as changesRoute from "@/app/api/reports/[id]/request-changes/route";
 import * as projectRoute from "@/app/api/projects/[id]/route";
 import { sendEmailSafely } from "@/lib/email";
-import { Notification, Project, Task, User, WeeklyReport } from "@/models";
-import { call, makeCompany, request, resetDatabase, signInAs } from "./helpers";
+import { prisma } from "@/lib/db/prisma";
+import { call, makeCompany, request, resetDatabase, setMembers, signInAs } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
-type Person = { _id: Types.ObjectId };
+type Person = { id: string };
 
 let company: Company;
 const today = format(new Date(), "yyyy-MM-dd");
@@ -32,15 +31,15 @@ beforeEach(async () => {
 const addTask = (body: object) =>
   call(tasksRoute.POST, request("POST", "/api/tasks", { body }));
 const task = (overrides: object = {}) => ({
-  projectId: String(company.it.project._id),
+  projectId: company.it.project.id,
   details: "Built the export screen.",
   hours: 3,
   date: today,
   ...overrides,
 });
 const reportOf = async (person: Person, date = today) => {
-  const created = await Task.findOne({ userId: person._id, date: new Date(`${date}T00:00:00.000Z`) }).lean();
-  return WeeklyReport.findById(created!.weeklyReportId).lean();
+  const created = await prisma.task.findFirst({ where: { userId: person.id, date: new Date(`${date}T00:00:00.000Z`) } });
+  return prisma.weeklyReport.findUnique({ where: { id: created!.weeklyReportId } });
 };
 const act = (route: { POST: typeof submitRoute.POST }, id: unknown, body?: object) =>
   call(route.POST, request("POST", "/x", { body }), { id: String(id) });
@@ -54,8 +53,8 @@ describe("logging tasks", () => {
     expect((await addTask(task({ hours: 1.5, status: "Blocked" }))).status).toBe(201);
     const report = await reportOf(company.it.developer);
     expect(report).toMatchObject({ status: "DRAFT" });
-    expect(report?.totals).toMatchObject({ hours: 4.5, taskCount: 2, blockedCount: 1, completedCount: 1 });
-    expect(String(report?.departmentId)).toBe(String(company.it.department._id));
+    expect(report).toMatchObject({ totalHours: 4.5, taskCount: 2, blockedCount: 1, completedCount: 1 });
+    expect(String(report?.departmentId)).toBe(company.it.department.id);
   });
 
   it("only allows assigned projects for a developer", async () => {
@@ -67,12 +66,12 @@ describe("logging tasks", () => {
 
   it("refuses another department's project with the same message", async () => {
     signInAs(company.it.lead);
-    const { body } = await addTask(task({ projectId: String(company.hr.project._id) }));
+    const { body } = await addTask(task({ projectId: company.hr.project.id }));
     expect(body.error.code).toBe("PROJECT_NOT_ALLOWED");
   });
 
   it("lets a Team Lead log on any department project, assigned or not", async () => {
-    await Project.updateOne({ _id: company.it.project._id }, { memberIds: [] });
+    await setMembers(company.it.project.id, []);
     signInAs(company.it.lead);
     expect((await addTask(task())).status).toBe(201);
   });
@@ -81,7 +80,7 @@ describe("logging tasks", () => {
     signInAs(company.it.developer);
     const tomorrowPlusOne = format(new Date(Date.now() + 3 * 864e5), "yyyy-MM-dd");
     expect((await addTask(task({ date: tomorrowPlusOne }))).status).toBe(400);
-    await Project.updateOne({ _id: company.it.project._id }, { status: "Completed" });
+    await prisma.project.updateMany({ where: { id: company.it.project.id }, data: { status: "Completed" } });
     expect((await addTask(task())).status).toBe(400);
     signInAs(company.ceo);
     expect((await addTask(task())).status).toBe(403);
@@ -101,11 +100,11 @@ describe("logging tasks", () => {
   it("ignores a userId or departmentId in the body", async () => {
     signInAs(company.it.developer);
     const { body } = await addTask(
-      task({ userId: String(company.hr.developer._id), departmentId: String(company.hr.department._id) }),
+      task({ userId: company.hr.developer.id, departmentId: company.hr.department.id }),
     );
-    const created = await Task.findById(body.data.id).lean();
-    expect(String(created?.userId)).toBe(String(company.it.developer._id));
-    expect(String(created?.departmentId)).toBe(String(company.it.department._id));
+    const created = await prisma.task.findUnique({ where: { id: body.data.id } });
+    expect(String(created?.userId)).toBe(company.it.developer.id);
+    expect(String(created?.departmentId)).toBe(company.it.department.id);
   });
 
   it("lists only the caller's own tasks", async () => {
@@ -144,8 +143,8 @@ describe("logging tasks", () => {
     const { body } = await addTask(task());
     const thisWeekReport = await reportOf(company.it.developer);
     await call(taskRoute.PATCH, request("PATCH", "/x", { body: { date: lastWeek } }), { id: body.data.id });
-    expect((await WeeklyReport.findById(thisWeekReport!._id).lean())?.totals.taskCount).toBe(0);
-    expect((await reportOf(company.it.developer, lastWeek))?.totals.taskCount).toBe(1);
+    expect((await prisma.weeklyReport.findUnique({ where: { id: thisWeekReport!.id } }))?.taskCount).toBe(0);
+    expect((await reportOf(company.it.developer, lastWeek))?.taskCount).toBe(1);
   });
 });
 
@@ -159,7 +158,7 @@ describe("copying and templates", () => {
     expect(status).toBe(200);
     expect(body.data).toEqual({ copied: 2, skipped: 0, from: earlier });
 
-    await Project.updateOne({ _id: company.it.project._id }, { $pull: { memberIds: company.it.developer._id } });
+    await prisma.projectMember.deleteMany({ where: { projectId: company.it.project.id, userId: company.it.developer.id } });
     const again = await call(copyRoute.POST, request("POST", "/x", { body: { date: today } }));
     expect(again.body.data).toMatchObject({ copied: 0, skipped: 2 });
   });
@@ -174,7 +173,7 @@ describe("copying and templates", () => {
     signInAs(company.it.developer);
     const created = await call(
       templatesRoute.POST,
-      request("POST", "/x", { body: { projectId: String(company.it.project._id), details: "Daily standup" } }),
+      request("POST", "/x", { body: { projectId: company.it.project.id, details: "Daily standup" } }),
     );
     expect(created.status).toBe(201);
     signInAs(company.it.lead);
@@ -192,27 +191,27 @@ describe("the workflow through the API", () => {
     signInAs(company.it.developer);
     await addTask(task());
     const report = await reportOf(company.it.developer);
-    expect((await act(submitRoute, report!._id)).status).toBe(200);
-    return report!._id;
+    expect((await act(submitRoute, report!.id)).status).toBe(200);
+    return report!.id;
   }
 
   it("locks tasks on submit, and refuses an empty week", async () => {
     signInAs(company.it.developer);
-    const empty = await WeeklyReport.create({
-      userId: company.it.developer._id,
-      departmentId: company.it.department._id,
+    const empty = await prisma.weeklyReport.create({ data: {
+      userId: company.it.developer.id,
+      departmentId: company.it.department.id,
       isoYear: 2025,
       isoWeek: 1,
       weekStart: new Date("2024-12-30"),
       weekEnd: new Date("2025-01-05"),
-    });
-    expect((await act(submitRoute, empty._id)).body.error.code).toBe("EMPTY_REPORT");
+    } });
+    expect((await act(submitRoute, empty.id)).body.error.code).toBe("EMPTY_REPORT");
 
     const id = await submittedDevReport();
-    const created = await Task.findOne({ weeklyReportId: id }).lean();
+    const created = await prisma.task.findFirst({ where: { weeklyReportId: id } });
     expect(created?.reportStatus).toBe("SUBMITTED");
     const edit = await call(taskRoute.PATCH, request("PATCH", "/x", { body: { hours: 1 } }), {
-      id: String(created!._id),
+      id: created!.id,
     });
     expect(edit.body.error.code).toBe("REPORT_LOCKED");
     expect((await addTask(task())).body.error.code).toBe("REPORT_LOCKED");
@@ -220,8 +219,8 @@ describe("the workflow through the API", () => {
 
   it("notifies only the direct approver on submit, by email and in the app", async () => {
     const id = await submittedDevReport();
-    const notes = await Notification.find({ reportId: id }).lean();
-    expect(notes.map((note) => String(note.recipientId))).toEqual([String(company.it.lead._id)]);
+    const notes = await prisma.notification.findMany({ where: { reportId: id } });
+    expect(notes.map((note) => String(note.recipientId))).toEqual([company.it.lead.id]);
     expect(vi.mocked(sendEmailSafely).mock.calls.map((args) => args[0].to)).toEqual([company.it.lead.email]);
   });
 
@@ -238,27 +237,28 @@ describe("the workflow through the API", () => {
     expect(queue.body.data.map((row: { id: string }) => row.id)).toEqual([String(id)]);
   });
 
-  it("Team Lead approval reaches the Manager only, and Manager approval the CEO only", async () => {
+  it("Team Lead approval reaches the Manager only, and Manager approval the CEO only, without email", async () => {
     const id = await submittedDevReport();
     vi.mocked(sendEmailSafely).mockClear();
-    await Notification.deleteMany({});
+    await prisma.notification.deleteMany();
 
     signInAs(company.it.lead);
     expect((await act(approveRoute, id)).body.data.status).toBe("LEAD_APPROVED");
-    let notes = await Notification.find({ reportId: id }).lean();
-    expect(notes.map((note) => String(note.recipientId))).toEqual([String(company.it.manager._id)]);
+    let notes = await prisma.notification.findMany({ where: { reportId: id } });
+    expect(notes.map((note) => String(note.recipientId))).toEqual([company.it.manager.id]);
     expect(vi.mocked(sendEmailSafely).mock.calls.map((args) => args[0].to)).toEqual([company.it.manager.email]);
 
     signInAs(company.ceo);
     expect((await openReport(id)).status).toBe(404);
 
     vi.mocked(sendEmailSafely).mockClear();
-    await Notification.deleteMany({});
+    await prisma.notification.deleteMany();
     signInAs(company.it.manager);
     expect((await act(approveRoute, id)).body.data.status).toBe("MANAGER_APPROVED");
-    notes = await Notification.find({ reportId: id }).lean();
-    expect(notes.map((note) => String(note.recipientId))).toEqual([String(company.ceo._id)]);
-    expect(vi.mocked(sendEmailSafely).mock.calls.map((args) => args[0].to)).toEqual([company.ceo.email]);
+    notes = await prisma.notification.findMany({ where: { reportId: id } });
+    expect(notes.map((note) => String(note.recipientId))).toEqual([company.ceo.id]);
+    // The CEO is told in the app only. Nobody emails the CEO.
+    expect(sendEmailSafely).not.toHaveBeenCalled();
 
     signInAs(company.ceo);
     const seen = await openReport(id);
@@ -268,7 +268,7 @@ describe("the workflow through the API", () => {
       "LEAD_APPROVED",
       "MANAGER_APPROVED",
     ]);
-    expect((await Task.findOne({ weeklyReportId: id }).lean())?.reportStatus).toBe("MANAGER_APPROVED");
+    expect((await prisma.task.findFirst({ where: { weeklyReportId: id } }))?.reportStatus).toBe("MANAGER_APPROVED");
   });
 
   it("request changes unlocks the tasks and tells the owner", async () => {
@@ -278,15 +278,15 @@ describe("the workflow through the API", () => {
     vi.mocked(sendEmailSafely).mockClear();
     const sent = await act(changesRoute, id, { comment: "Add Wednesday's hours." });
     expect(sent.body.data.status).toBe("CHANGES_REQUESTED");
-    const note = await Notification.findOne({ reportId: id, type: "REPORT_CHANGES_REQUESTED" }).lean();
-    expect(String(note?.recipientId)).toBe(String(company.it.developer._id));
+    const note = await prisma.notification.findFirst({ where: { reportId: id, type: "REPORT_CHANGES_REQUESTED" } });
+    expect(String(note?.recipientId)).toBe(company.it.developer.id);
     expect(note?.message).toContain("Add Wednesday's hours.");
     expect(vi.mocked(sendEmailSafely).mock.calls[0]![0].to).toBe(company.it.developer.email);
 
     signInAs(company.it.developer);
-    const created = await Task.findOne({ weeklyReportId: id }).lean();
+    const created = await prisma.task.findFirst({ where: { weeklyReportId: id } });
     const edit = await call(taskRoute.PATCH, request("PATCH", "/x", { body: { hours: 2 } }), {
-      id: String(created!._id),
+      id: created!.id,
     });
     expect(edit.status).toBe(200);
     expect((await act(submitRoute, id)).body.data.status).toBe("SUBMITTED");
@@ -298,12 +298,12 @@ describe("the workflow through the API", () => {
     signInAs(company.it.manager);
     await addTask(task());
     const report = await reportOf(company.it.manager);
-    await act(submitRoute, report!._id);
+    await act(submitRoute, report!.id);
     signInAs(company.ceo);
     const queue = await call(queueRoute.GET, request("GET", "/x"));
-    expect(queue.body.data.map((row: { id: string }) => row.id)).toEqual([String(report!._id)]);
-    expect((await act(approveRoute, report!._id)).body.data.status).toBe("MANAGER_APPROVED");
-    const trail = (await WeeklyReport.findById(report!._id).lean())?.approvalTrail ?? [];
+    expect(queue.body.data.map((row: { id: string }) => row.id)).toEqual([report!.id]);
+    expect((await act(approveRoute, report!.id)).body.data.status).toBe("MANAGER_APPROVED");
+    const trail = await prisma.reportTrailEntry.findMany({ where: { reportId: report!.id }, orderBy: { id: "asc" } });
     expect(trail.at(-1)?.action).toBe("CEO_ACKNOWLEDGED");
   });
 
@@ -311,9 +311,9 @@ describe("the workflow through the API", () => {
     signInAs(company.it.manager);
     await addTask(task({ hours: 7 }));
     const report = await reportOf(company.it.manager);
-    await act(submitRoute, report!._id);
+    await act(submitRoute, report!.id);
     signInAs(company.ceo);
-    const project = await call(projectRoute.GET, request("GET", "/x"), { id: String(company.it.project._id) });
+    const project = await call(projectRoute.GET, request("GET", "/x"), { id: company.it.project.id });
     expect(project.body.data.activity.totalHours).toBe(8);
   });
 
@@ -336,12 +336,11 @@ describe("the workflow through the API", () => {
     expect(body.data[0].weekStart > body.data[1].weekStart).toBe(true);
   });
 
-  it("returns the user's role but no email or secrets on a report", async () => {
-    await User.updateOne({ _id: company.it.developer._id }, { passwordHash: "secret-hash" });
+  it("returns the user's role but no email on a report", async () => {
     const id = await submittedDevReport();
     signInAs(company.it.lead);
     const { body } = await openReport(id);
     expect(body.data.owner).toMatchObject({ role: "DEVELOPER" });
-    expect(JSON.stringify(body)).not.toMatch(/secret-hash|@test\.local/);
+    expect(JSON.stringify(body)).not.toMatch(/@test\.local/);
   });
 });

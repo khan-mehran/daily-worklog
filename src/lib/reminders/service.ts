@@ -1,9 +1,9 @@
 import { subDays } from "date-fns";
-import { SUBMITTED_STATUSES } from "@/lib/constants";
-import { notify } from "@/lib/notifications";
+import { ORG_WIDE_ROLES, SUBMITTED_STATUSES } from "@/lib/constants";
 import { submissionDeadline } from "@/lib/dashboards/service";
+import { prisma } from "@/lib/db/prisma";
+import { notify } from "@/lib/notifications";
 import { dayString, isoWeekOf } from "@/lib/reports/iso-week";
-import { User, WeeklyReport } from "@/models";
 
 const STALE_REVIEW_DAYS = 2;
 
@@ -12,6 +12,7 @@ const STALE_REVIEW_DAYS = 2;
  * is never sent to the same person twice.
  * - From Friday 4 PM, everyone who hasn't submitted this week gets one reminder for the week.
  * - Every day, approvers get one reminder per report that has waited over two days.
+ * Reminders go out in the app and by email, except to the CEO, who is never emailed.
  */
 export async function sendReminders(now = new Date()) {
   const week = isoWeekOf(now);
@@ -19,18 +20,21 @@ export async function sendReminders(now = new Date()) {
   let reviewReminders = 0;
 
   if (now >= submissionDeadline(now)) {
-    const submitted = await WeeklyReport.find({
-      isoYear: week.isoYear,
-      isoWeek: week.isoWeek,
-      status: { $in: SUBMITTED_STATUSES },
-    }).distinct("userId");
-    const people = User.find({ role: { $ne: "CEO" }, departmentId: { $ne: null }, isActive: true, _id: { $nin: submitted } })
-      .select("_id departmentId")
-      .lean()
-      .cursor();
-    for await (const person of people) {
+    const people = await prisma.user.findMany({
+      where: {
+        role: { notIn: [...ORG_WIDE_ROLES] },
+        departmentId: { not: null },
+        isActive: true,
+        approval: "APPROVED",
+        reports: {
+          none: { isoYear: week.isoYear, isoWeek: week.isoWeek, status: { in: [...SUBMITTED_STATUSES] } },
+        },
+      },
+      select: { id: true, departmentId: true },
+    });
+    for (const person of people) {
       const sent = await notify({
-        recipientId: person._id,
+        recipientId: person.id,
         departmentId: person.departmentId,
         type: "REMINDER",
         title: `Week ${week.isoWeek} isn't submitted yet`,
@@ -43,25 +47,30 @@ export async function sendReminders(now = new Date()) {
     }
   }
 
-  const waiting = WeeklyReport.find({
-    status: { $in: ["SUBMITTED", "LEAD_APPROVED"] },
-    currentApproverId: { $ne: null },
-    updatedAt: { $lte: subDays(now, STALE_REVIEW_DAYS) },
-  })
-    .select("_id departmentId currentApproverId isoWeek userId")
-    .populate<{ userId: { name: string } }>("userId", "name")
-    .lean()
-    .cursor();
-  for await (const report of waiting) {
+  const waiting = await prisma.weeklyReport.findMany({
+    where: {
+      status: { in: ["SUBMITTED", "LEAD_APPROVED"] },
+      currentApproverId: { not: null },
+      updatedAt: { lte: subDays(now, STALE_REVIEW_DAYS) },
+    },
+    select: {
+      id: true,
+      departmentId: true,
+      currentApproverId: true,
+      isoWeek: true,
+      user: { select: { name: true } },
+    },
+  });
+  for (const report of waiting) {
     const sent = await notify({
       recipientId: report.currentApproverId!,
       departmentId: report.departmentId,
       type: "REMINDER",
-      title: `${report.userId.name}'s week ${report.isoWeek} is waiting for you`,
-      message: `${report.userId.name}'s report for week ${report.isoWeek} has been waiting for your review for over ${STALE_REVIEW_DAYS} days.`,
-      link: `/reports/${report._id}`,
-      reportId: report._id,
-      dedupeKey: `review:${report._id}:${dayString(now)}`,
+      title: `${report.user.name}'s week ${report.isoWeek} is waiting for you`,
+      message: `${report.user.name}'s report for week ${report.isoWeek} has been waiting for your review for over ${STALE_REVIEW_DAYS} days.`,
+      link: `/reports/${report.id}`,
+      reportId: report.id,
+      dedupeKey: `review:${report.id}:${dayString(now)}`,
       email: true,
     });
     if (sent) reviewReminders++;

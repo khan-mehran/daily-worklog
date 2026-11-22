@@ -1,35 +1,49 @@
 import { z } from "zod";
-import { THEMES } from "@/lib/constants";
-import { emailSchema, objectIdSchema, paginationSchema, passwordSchema, personNameSchema } from "./common";
+import { APPROVALS, ROLES, THEMES } from "@/lib/constants";
+import { emailSchema, idSchema, paginationSchema, personNameSchema } from "./common";
 
-/** CEO is deliberately absent: there is one, and it's created by the seed. */
+/** The roles inside departments. Anyone who manages users can give these. */
 export const assignableRoleSchema = z.enum(["MANAGER", "TEAM_LEAD", "DEVELOPER"]);
+/** Every role. Whether the caller may give Super Admin or CEO is decided in the service. */
+export const anyRoleSchema = z.enum(ROLES);
 
 export const createUserSchema = z.object({
   name: personNameSchema,
   email: emailSchema,
   role: assignableRoleSchema,
-  departmentId: objectIdSchema.nullable().optional(),
-  reportsTo: objectIdSchema.nullable().optional(),
+  departmentId: idSchema.nullable().optional(),
+  reportsTo: idSchema.nullable().optional(),
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
 export const updateUserSchema = z
   .object({
     name: personNameSchema,
-    role: assignableRoleSchema,
-    departmentId: objectIdSchema.nullable(),
-    reportsTo: objectIdSchema.nullable(),
+    role: anyRoleSchema,
+    departmentId: idSchema.nullable(),
+    reportsTo: idSchema.nullable(),
     isActive: z.boolean(),
   })
   .partial()
   .refine((value) => Object.keys(value).length > 0, "Nothing to update");
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
+/**
+ * Approving someone who signed in with Microsoft: their role and where they sit. A Manager's
+ * department is optional, and makes them that department's manager.
+ */
+export const approveUserSchema = z.object({
+  role: anyRoleSchema,
+  departmentId: idSchema.nullable().optional(),
+  reportsTo: idSchema.nullable().optional(),
+});
+export type ApproveUserInput = z.infer<typeof approveUserSchema>;
+
 export const listUsersQuerySchema = paginationSchema.extend({
   search: z.string().trim().max(80).optional(),
-  role: z.enum(["CEO", "MANAGER", "TEAM_LEAD", "DEVELOPER"]).optional(),
-  departmentId: objectIdSchema.optional(),
+  role: anyRoleSchema.optional(),
+  approval: z.enum(APPROVALS).optional(),
+  departmentId: idSchema.optional(),
   /** Managers with no department yet, for the Assign manager picker. */
   unassigned: z.enum(["true", "false"]).optional(),
   active: z.enum(["true", "false"]).optional(),
@@ -44,21 +58,6 @@ export const preferencesSchema = z
   .partial()
   .refine((value) => Object.keys(value).length > 0, "Nothing to update");
 
-export const departmentFilterSchema = z.object({ departmentId: objectIdSchema.nullable() });
+export const departmentFilterSchema = z.object({ departmentId: idSchema.nullable() });
 
 export const updateProfileSchema = z.object({ name: personNameSchema });
-
-export const changePasswordSchema = z
-  .object({
-    currentPassword: z.string().min(1, "Enter your current password").max(72),
-    newPassword: passwordSchema,
-    confirmPassword: z.string(),
-  })
-  .refine((value) => value.newPassword === value.confirmPassword, {
-    path: ["confirmPassword"],
-    message: "Passwords do not match",
-  })
-  .refine((value) => value.newPassword !== value.currentPassword, {
-    path: ["newPassword"],
-    message: "Choose a password you haven't used here",
-  });

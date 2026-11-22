@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { Types } from "mongoose";
 import { conflict, notFound } from "@/lib/api/errors";
-import { ApiToken } from "@/models";
+import { prisma } from "@/lib/db/prisma";
 import { loadActiveUser } from "./session";
 
 export const TOKEN_PREFIX = "wlk_";
@@ -12,9 +11,9 @@ const LAST_USED_RESOLUTION_MS = 5 * 60 * 1000;
 export const hashApiToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export async function listApiTokens(userId: string) {
-  const tokens = await ApiToken.find({ userId: new Types.ObjectId(userId) }).sort({ createdAt: -1 }).lean();
+  const tokens = await prisma.apiToken.findMany({ where: { userId }, orderBy: { createdAt: "desc" } });
   return tokens.map((token) => ({
-    id: String(token._id),
+    id: token.id,
     name: token.name,
     prefix: token.prefix,
     createdAt: token.createdAt.toISOString(),
@@ -24,34 +23,36 @@ export async function listApiTokens(userId: string) {
 
 /** Creates a token and returns it in full. This is the only time the full token is available. */
 export async function createApiToken(userId: string, name: string) {
-  if ((await ApiToken.countDocuments({ userId: new Types.ObjectId(userId) })) >= MAX_TOKENS_PER_USER) {
+  if ((await prisma.apiToken.count({ where: { userId } })) >= MAX_TOKENS_PER_USER) {
     throw conflict(`You can keep up to ${MAX_TOKENS_PER_USER} tokens. Revoke one first.`);
   }
   const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-  const record = await ApiToken.create({
-    userId,
-    name,
-    tokenHash: hashApiToken(token),
-    prefix: token.slice(0, TOKEN_PREFIX.length + 6),
+  const record = await prisma.apiToken.create({
+    data: {
+      userId,
+      name,
+      tokenHash: hashApiToken(token),
+      prefix: token.slice(0, TOKEN_PREFIX.length + 6),
+    },
   });
-  return { id: String(record._id), token };
+  return { id: record.id, token };
 }
 
-export async function revokeApiToken(userId: string, id: Types.ObjectId) {
-  const deleted = await ApiToken.findOneAndDelete({ _id: id, userId: new Types.ObjectId(userId) });
-  if (!deleted) throw notFound();
+export async function revokeApiToken(userId: string, id: string) {
+  const { count } = await prisma.apiToken.deleteMany({ where: { id, userId } });
+  if (count === 0) throw notFound();
 }
 
 /** The active user behind an `Authorization: Bearer wlk_...` header, or null. */
 export async function userFromBearer(header: string | null) {
   const token = header?.match(/^Bearer\s+(\S+)$/i)?.[1];
   if (!token?.startsWith(TOKEN_PREFIX)) return null;
-  const record = await ApiToken.findOne({ tokenHash: hashApiToken(token) }).lean();
+  const record = await prisma.apiToken.findUnique({ where: { tokenHash: hashApiToken(token) } });
   if (!record) return null;
-  const user = await loadActiveUser(String(record.userId));
+  const user = await loadActiveUser(record.userId);
   if (!user) return null;
   if (!record.lastUsedAt || Date.now() - record.lastUsedAt.getTime() > LAST_USED_RESOLUTION_MS) {
-    await ApiToken.updateOne({ _id: record._id }, { lastUsedAt: new Date() });
+    await prisma.apiToken.update({ where: { id: record.id }, data: { lastUsedAt: new Date() } });
   }
   return user;
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { emailSchema, objectIdSchema, paletteColorSchema, personNameSchema } from "./common";
+import { emailSchema, idSchema, paletteColorSchema, personNameSchema } from "./common";
 
 const name = z.string().trim().min(2, "Enter a department name").max(60);
 const code = z
@@ -10,7 +10,7 @@ const code = z
 const description = z.string().trim().max(500).default("");
 
 export const managerAssignmentSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("existing"), userId: objectIdSchema }),
+  z.object({ mode: z.literal("existing"), userId: idSchema }),
   z.object({ mode: z.literal("new"), name: personNameSchema, email: emailSchema }),
 ]);
 export type ManagerAssignment = z.infer<typeof managerAssignmentSchema>;

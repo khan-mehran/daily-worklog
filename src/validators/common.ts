@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { PALETTE } from "@/lib/constants";
 
-// Client-safe: ids are checked by shape, with no dependency on the mongoose bundle.
-export const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
+const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Ids are lower-case UUIDs. Client-safe: checked by shape, with no database import. */
+export const isId = (value: unknown): value is string => typeof value === "string" && ID_PATTERN.test(value);
+
+export const idSchema = z.string().regex(ID_PATTERN, "Invalid id");
 
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -32,7 +36,3 @@ export const personNameSchema = z
   .trim()
   .min(2, "Enter a name")
   .max(80);
-export const passwordSchema = z
-  .string()
-  .min(10, "Use at least 10 characters")
-  .max(72, "Use at most 72 characters");

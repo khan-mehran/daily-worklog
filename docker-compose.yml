@@ -1,37 +1,21 @@
 services:
-  mongo:
-    image: mongo:8
+  postgres:
+    image: postgres:18-alpine
     restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: worklog
+      POSTGRES_USER: postgres
+      # Local development only. It matches DATABASE_URL in .env.example.
+      POSTGRES_PASSWORD: worklog
     volumes:
-      - mongo-data:/data/db
+      - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d worklog"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  mongo-express:
-    image: mongo-express:1
-    restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/
-      ME_CONFIG_BASICAUTH_ENABLED: "true"
-      ME_CONFIG_BASICAUTH_USERNAME: admin
-      ME_CONFIG_BASICAUTH_PASSWORD: worklog
-
-  mailpit:
-    image: axllent/mailpit:v1.27
-    restart: unless-stopped
-    ports:
-      - "1025:1025"
-      - "8025:8025"
-
 volumes:
-  mongo-data:
+  postgres-data:

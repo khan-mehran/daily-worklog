@@ -1,16 +1,18 @@
 import type { ReactNode } from "react";
 import { AppShell, type ShellDepartment } from "@/components/layout/app-shell";
+import { SyncSetupPopup } from "@/components/settings/sync-setup-popup";
 import { getPageScope } from "@/lib/auth/page";
+import { seesAllDepartments } from "@/lib/constants";
 import { countUnreadNotifications } from "@/lib/notifications";
-import { Department } from "@/models";
+import { prisma } from "@/lib/db/prisma";
 
 const toShell = (department: {
-  _id: unknown;
+  id: string;
   name: string;
   code: string;
   color: string;
 }): ShellDepartment => ({
-  id: String(department._id),
+  id: department.id,
   name: department.name,
   code: department.code,
   color: department.color,
@@ -20,12 +22,17 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const { user, selectedDepartmentId } = await getPageScope();
 
   const [ownDepartment, departments, unreadCount] = await Promise.all([
-    user.departmentId ? Department.findById(user.departmentId).lean() : null,
-    user.role === "CEO"
-      ? Department.find({ status: "Active" }).sort({ name: 1 }).lean()
+    user.departmentId ? prisma.department.findUnique({ where: { id: user.departmentId } }) : null,
+    seesAllDepartments(user.role)
+      ? prisma.department.findMany({ where: { status: "Active" }, orderBy: { name: "asc" } })
       : Promise.resolve([]),
     countUnreadNotifications(user.id),
   ]);
+
+  // The setup popup is for people who log tasks, haven't been shown it and have no sync token yet.
+  const showSyncSetup =
+    !seesAllDepartments(user.role) &&
+    (await prisma.user.count({ where: { id: user.id, syncGuideSeenAt: null, apiTokens: { none: {} } } })) > 0;
 
   return (
     <AppShell
@@ -42,6 +49,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       unreadCount={unreadCount}
     >
       {children}
+      <SyncSetupPopup show={showSyncSetup} />
     </AppShell>
   );
 }

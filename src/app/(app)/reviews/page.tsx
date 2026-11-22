@@ -5,6 +5,6 @@ import { requirePageRole } from "@/lib/auth/page";
 export const metadata: Metadata = { title: "Reviews" };
 
 export default async function ReviewsPage() {
-  await requirePageRole("CEO", "MANAGER", "TEAM_LEAD");
+  await requirePageRole("SUPER_ADMIN", "CEO", "MANAGER", "TEAM_LEAD");
   return <ReviewsView />;
 }

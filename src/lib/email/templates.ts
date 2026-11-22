@@ -16,7 +16,7 @@ function layout(title: string, body: string, action: { label: string; url: strin
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px">
     <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border:1px solid #E4DFD3;border-radius:12px">
       <tr><td style="padding:32px">
-        <p style="margin:0 0 24px;font-weight:700;color:#0F766E">WorkLog</p>
+        <p style="margin:0 0 24px;font-weight:700;color:#0F766E">GET List</p>
         <h1 style="margin:0 0 12px;font-size:20px">${escapeHtml(title)}</h1>
         <p style="margin:0 0 24px;font-size:15px;line-height:22px">${body}</p>
         <a href="${escapeHtml(action.url)}" style="display:inline-block;background:#0F766E;color:#FFFFFF;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600">${escapeHtml(action.label)}</a>
@@ -26,24 +26,42 @@ function layout(title: string, body: string, action: { label: string; url: strin
 </body></html>`;
 }
 
-export function inviteEmail(input: {
-  to: string;
-  name: string;
-  token: string;
-  departmentName?: string;
-}): EmailMessage {
-  const url = `${appUrl()}/invite/${input.token}`;
+/** For someone added from the Users page, or as a new department's manager, before they sign in. */
+export function welcomeEmail(input: { to: string; name: string; departmentName?: string }): EmailMessage {
+  const url = `${appUrl()}/login`;
   const where = input.departmentName ? ` as manager of ${input.departmentName}` : "";
-  const title = "You've been invited to WorkLog";
+  const title = "You've been added to GET List";
   return {
     to: input.to,
     subject: title,
     html: layout(
       title,
-      `Hi ${escapeHtml(input.name)}, your WorkLog account is ready${escapeHtml(where)}. Set a password to sign in. This link expires in 7 days.`,
-      { label: "Set your password", url },
+      `Hi ${escapeHtml(input.name)}, your GET List account is ready${escapeHtml(where)}. Sign in with your Microsoft account (${escapeHtml(input.to)}).`,
+      { label: "Sign in to GET List", url },
     ),
-    text: `Hi ${input.name}, your WorkLog account is ready${where}. Set a password within 7 days: ${url}`,
+    text: `Hi ${input.name}, your GET List account is ready${where}. Sign in with your Microsoft account (${input.to}): ${url}`,
+  };
+}
+
+/** For someone who signed in, waited, and has now been approved. */
+export function accessApprovedEmail(input: {
+  to: string;
+  name: string;
+  role: string;
+  departmentName?: string;
+}): EmailMessage {
+  const url = `${appUrl()}/login`;
+  const place = input.departmentName ? `${input.role} in ${input.departmentName}` : input.role;
+  const title = "Your GET List access is approved";
+  return {
+    to: input.to,
+    subject: title,
+    html: layout(
+      title,
+      `Hi ${escapeHtml(input.name)}, your access to GET List has been approved. You're set up as ${escapeHtml(place)}. Sign in with your Microsoft account to get started.`,
+      { label: "Sign in to GET List", url },
+    ),
+    text: `Hi ${input.name}, your access to GET List has been approved. You're set up as ${place}. Sign in with your Microsoft account: ${url}`,
   };
 }
 
@@ -59,10 +77,10 @@ export function departmentAssignedEmail(input: {
     subject: title,
     html: layout(
       title,
-      `Hi ${escapeHtml(input.name)}, the CEO has assigned you as manager of ${escapeHtml(input.departmentName)}.`,
-      { label: "Open WorkLog", url },
+      `Hi ${escapeHtml(input.name)}, you've been assigned as manager of ${escapeHtml(input.departmentName)}.`,
+      { label: "Open GET List", url },
     ),
-    text: `Hi ${input.name}, the CEO has assigned you as manager of ${input.departmentName}. ${url}`,
+    text: `Hi ${input.name}, you've been assigned as manager of ${input.departmentName}. ${url}`,
   };
 }
 
@@ -79,7 +97,7 @@ export function notificationEmail(input: {
     to: input.to,
     subject: input.title,
     html: layout(input.title, `Hi ${escapeHtml(input.name)}, ${escapeHtml(input.message)}`, {
-      label: "Open in WorkLog",
+      label: "Open in GET List",
       url,
     }),
     text: `Hi ${input.name}, ${input.message}\n\n${url}`,

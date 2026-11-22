@@ -6,7 +6,7 @@ import { requirePageRole } from "@/lib/auth/page";
 export const metadata: Metadata = { title: "Team" };
 
 export default async function TeamPage() {
-  const user = await requirePageRole("CEO", "MANAGER", "TEAM_LEAD");
+  const user = await requirePageRole("SUPER_ADMIN", "CEO", "MANAGER", "TEAM_LEAD");
   return (
     <Suspense>
       <TeamView role={user.role} />

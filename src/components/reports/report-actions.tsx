@@ -145,7 +145,7 @@ export function ReportActions({ report }: { report: ReportDetail }) {
         title={`Approve ${owner}'s week ${report.isoWeek}?`}
         description={
           report.status === "SUBMITTED" && report.owner?.role === "DEVELOPER"
-            ? "It goes to the Manager for final approval."
+            ? "It goes to the head of the department for final approval."
             : report.owner?.role === "MANAGER"
               ? "This acknowledges the Manager's week."
               : "This is the final approval. The week becomes visible to the CEO."

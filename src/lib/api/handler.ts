@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { Types } from "mongoose";
 import { ZodError, type ZodType } from "zod";
 import { userFromBearer } from "@/lib/auth/api-token";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth/session";
-import { DEPARTMENT_FILTER_COOKIE } from "@/lib/constants";
-import { connectDB } from "@/lib/db/connect";
+import { DEPARTMENT_FILTER_COOKIE, seesAllDepartments } from "@/lib/constants";
+import { isUniqueViolation } from "@/lib/db/prisma";
 import { scopeFor, type DepartmentScope } from "@/lib/permissions";
+import { isId } from "@/validators/common";
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from "./errors";
 
 export interface RouteContext<P> {
@@ -15,7 +15,7 @@ export interface RouteContext<P> {
 
 export interface AuthedContext<P> extends RouteContext<P> {
   user: CurrentUser;
-  /** The department filter from the CEO's switcher. Always null for other roles. */
+  /** The department filter from the switcher the CEO and Super Admin have. Null for other roles. */
   selectedDepartmentId: string | null;
   /** The department filter for this request. Use it in every query. */
   scope: DepartmentScope;
@@ -37,7 +37,7 @@ function errorResponse(error: unknown) {
       : "Invalid input.";
     return NextResponse.json({ error: { code: "VALIDATION_ERROR", message } }, { status: 400 });
   }
-  if ((error as { code?: number })?.code === 11000) {
+  if (isUniqueViolation(error)) {
     return NextResponse.json(
       { error: { code: "DUPLICATE", message: "A record with these details already exists." } },
       { status: 409 },
@@ -72,7 +72,6 @@ export function publicRoute<P = Record<string, never>>(
   return async (req: NextRequest, segment: Segment<P>) => {
     try {
       assertSameOrigin(req);
-      await connectDB();
       return await handler({ req, params: await segment.params });
     } catch (error) {
       return errorResponse(error);
@@ -87,12 +86,11 @@ export function authedRoute<P = Record<string, never>>(
   return async (req: NextRequest, segment: Segment<P>) => {
     try {
       assertSameOrigin(req);
-      await connectDB();
       const user = await getCurrentUser();
       if (!user) throw unauthorized();
       const cookie = req.cookies.get(DEPARTMENT_FILTER_COOKIE)?.value ?? null;
       const selectedDepartmentId =
-        user.role === "CEO" && cookie && Types.ObjectId.isValid(cookie) ? cookie : null;
+        seesAllDepartments(user.role) && isId(cookie) ? cookie : null;
       return await handler({
         req,
         params: await segment.params,
@@ -116,7 +114,6 @@ export function tokenRoute<P = Record<string, never>>(
 ) {
   return async (req: NextRequest, segment: Segment<P>) => {
     try {
-      await connectDB();
       const user = await userFromBearer(req.headers.get("authorization"));
       if (!user) throw new ApiError(401, "UNAUTHORIZED", "Missing, invalid or revoked API token.");
       return await handler({
@@ -147,7 +144,7 @@ export function parseQuery<T>(req: NextRequest, schema: ZodType<T, unknown>) {
 }
 
 /** A malformed id can't match a record, so it gets the same 404 as a missing one. */
-export function objectIdParam(id: string) {
-  if (!Types.ObjectId.isValid(id)) throw notFound();
-  return new Types.ObjectId(id);
+export function idParam(id: string) {
+  if (!isId(id)) throw notFound();
+  return id;
 }

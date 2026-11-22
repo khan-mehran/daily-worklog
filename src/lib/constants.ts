@@ -1,9 +1,11 @@
 // Client-safe enums and labels. Nothing in this file may import server code.
 
-export const ROLES = ["CEO", "MANAGER", "TEAM_LEAD", "DEVELOPER"] as const;
+// In seniority order, as in the database enum.
+export const ROLES = ["SUPER_ADMIN", "CEO", "MANAGER", "TEAM_LEAD", "DEVELOPER"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
+  SUPER_ADMIN: "Super Admin",
   CEO: "CEO",
   MANAGER: "Manager",
   TEAM_LEAD: "Team Lead",
@@ -12,10 +14,29 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 /** The role a user of each role must report to. */
 export const REPORTS_TO_ROLE: Record<Role, Role | null> = {
+  SUPER_ADMIN: null,
   CEO: null,
   MANAGER: "CEO",
   TEAM_LEAD: "MANAGER",
   DEVELOPER: "TEAM_LEAD",
+};
+
+/**
+ * The roles outside the departments. The Super Admin runs the system: who may sign in, with which
+ * role, in which department. The CEO is the top of the approval chain. Both see every department,
+ * and neither logs work.
+ */
+export const ORG_WIDE_ROLES = ["SUPER_ADMIN", "CEO"] as const satisfies readonly Role[];
+export const seesAllDepartments = (role: Role) => role === "SUPER_ADMIN" || role === "CEO";
+
+/** Whether a Super Admin has let someone in. A first Microsoft sign-in starts as PENDING. */
+export const APPROVALS = ["PENDING", "APPROVED", "REJECTED"] as const;
+export type Approval = (typeof APPROVALS)[number];
+
+export const APPROVAL_LABELS: Record<Approval, string> = {
+  PENDING: "Waiting for approval",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
 };
 
 export const PALETTE = [
@@ -79,4 +100,4 @@ export const EDITABLE_STATUSES: readonly ReportStatus[] = ["DRAFT", "CHANGES_REQ
 export const THEMES = ["light", "dark", "system"] as const;
 export type ThemePreference = (typeof THEMES)[number];
 
-export const DEPARTMENT_FILTER_COOKIE = "worklog-department";
+export const DEPARTMENT_FILTER_COOKIE = "getl-department";

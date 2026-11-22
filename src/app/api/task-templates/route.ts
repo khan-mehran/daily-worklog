@@ -10,5 +10,5 @@ export const GET = authedRoute(async ({ user }) =>
 
 export const POST = authedRoute(async ({ req, user }) => {
   const template = await createTemplate(user, await parseBody(req, createTemplateSchema));
-  return NextResponse.json({ data: { id: String(template._id) } }, { status: 201 });
+  return NextResponse.json({ data: { id: template.id } }, { status: 201 });
 });

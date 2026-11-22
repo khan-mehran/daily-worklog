@@ -113,7 +113,7 @@ export function ManagerFields<T extends ManagerForm>({
             label="Work email"
             htmlFor="manager-email"
             error={fieldErrors?.email?.message}
-            hint="They'll get an email invite to set a password."
+            hint="They'll be emailed, and sign in with the Microsoft account that has this address."
           >
             <Input
               id="manager-email"

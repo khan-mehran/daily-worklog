@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
-import { Types } from "mongoose";
 import { ApiError } from "@/lib/api/errors";
 import { getActivitySummarizer, type ProjectActivity } from "@/lib/ai";
 import type { SyncOrigin } from "@/lib/constants";
+import { prisma } from "@/lib/db/prisma";
 import { projectScope, type Actor } from "@/lib/permissions";
 import { storedDay } from "@/lib/reports/iso-week";
 import { createTask, requireLogger, updateTask } from "@/lib/tasks/service";
-import { Project, Task } from "@/models";
 import type { DailySyncInput } from "@/validators/sync";
 import { MAX_DETAILS } from "@/validators/task";
 
@@ -73,13 +72,10 @@ export async function syncDay(actor: Actor, input: DailySyncInput): Promise<Sync
   const results: SyncResult[] = [];
 
   for (const entry of input.projects) {
-    const project = await Project.findOne({
-      code: entry.code,
-      ...projectScope(actor),
-      status: { $ne: "Completed" },
-    })
-      .select("_id name")
-      .lean();
+    const project = await prisma.project.findFirst({
+      where: { code: entry.code, ...projectScope(actor), status: { not: "Completed" } },
+      select: { id: true, name: true },
+    });
     if (!project) {
       results.push({
         code: entry.code,
@@ -96,14 +92,10 @@ export async function syncDay(actor: Actor, input: DailySyncInput): Promise<Sync
       continue;
     }
 
-    const existing = await Task.findOne({
-      userId: new Types.ObjectId(actor.id),
-      projectId: project._id,
-      date: storedDay(input.date),
-      source: "sync",
-    })
-      .select("_id details syncHash syncedFrom")
-      .lean();
+    const existing = await prisma.task.findFirst({
+      where: { userId: actor.id, projectId: project.id, date: storedDay(input.date), source: "sync" },
+      select: { id: true, details: true, syncHash: true, syncedFrom: true },
+    });
     if (existing && existing.syncHash !== hashDetails(existing.details)) {
       results.push({ ...base, outcome: "kept", message: "You've edited this task, so the sync left it alone." });
       continue;
@@ -121,7 +113,7 @@ export async function syncDay(actor: Actor, input: DailySyncInput): Promise<Sync
         await createTask(
           actor,
           {
-            projectId: String(project._id),
+            projectId: project.id,
             details,
             hours: null,
             // Only uncommitted work means the day ended mid-task.
@@ -134,8 +126,8 @@ export async function syncDay(actor: Actor, input: DailySyncInput): Promise<Sync
       } else if (existing.syncHash === syncHash) {
         results.push({ ...base, outcome: "unchanged", message: "Already up to date." });
       } else {
-        await updateTask(actor, existing._id, { details, ...(entry.status ? { status: entry.status } : {}) });
-        await Task.updateOne({ _id: existing._id }, { syncHash, syncedFrom });
+        await updateTask(actor, existing.id, { details, ...(entry.status ? { status: entry.status } : {}) });
+        await prisma.task.update({ where: { id: existing.id }, data: { syncHash, syncedFrom } });
         results.push({ ...base, outcome: "updated", message: "Refreshed with the latest activity." });
       }
     } catch (error) {

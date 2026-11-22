@@ -1,8 +1,7 @@
-import { Types } from "mongoose";
+import { ORG_WIDE_ROLES, seesAllDepartments } from "@/lib/constants";
+import { prisma } from "@/lib/db/prisma";
 import { canViewPeople, projectScope, scopeFor, type Actor } from "@/lib/permissions";
 import { dayString } from "@/lib/reports/iso-week";
-import { escapeRegex } from "@/lib/utils";
-import { Project, Task, User } from "@/models";
 
 const PER_GROUP = 5;
 
@@ -11,43 +10,51 @@ const PER_GROUP = 5;
  * person can open, people in their department (Team Leads and up), and their own tasks.
  */
 export async function search(actor: Actor, selectedDepartmentId: string | null, query: string) {
-  const pattern = { $regex: escapeRegex(query), $options: "i" };
+  const matches = { contains: query, mode: "insensitive" } as const;
   const [projects, people, tasks] = await Promise.all([
-    Project.find({ ...projectScope(actor, selectedDepartmentId), $or: [{ name: pattern }, { code: pattern }] })
-      .select("name code color")
-      .limit(PER_GROUP)
-      .lean(),
+    prisma.project.findMany({
+      where: { ...projectScope(actor, selectedDepartmentId), OR: [{ name: matches }, { code: matches }] },
+      select: { id: true, name: true, code: true, color: true },
+      take: PER_GROUP,
+    }),
     canViewPeople(actor)
-      ? User.find({ ...scopeFor(actor, selectedDepartmentId), role: { $ne: "CEO" }, $or: [{ name: pattern }, { email: pattern }] })
-          .select("name role avatarColor")
-          .limit(PER_GROUP)
-          .lean()
+      ? prisma.user.findMany({
+          where: {
+            ...scopeFor(actor, selectedDepartmentId),
+            role: { notIn: [...ORG_WIDE_ROLES] },
+            approval: "APPROVED",
+            OR: [{ name: matches }, { email: matches }],
+          },
+          select: { id: true, name: true, role: true, avatarColor: true },
+          take: PER_GROUP,
+        })
       : Promise.resolve([]),
-    actor.role === "CEO"
+    seesAllDepartments(actor.role)
       ? Promise.resolve([])
-      : Task.find({ userId: new Types.ObjectId(actor.id), details: pattern })
-          .sort({ date: -1 })
-          .select("details date")
-          .limit(PER_GROUP)
-          .lean(),
+      : prisma.task.findMany({
+          where: { userId: actor.id, details: matches },
+          orderBy: { date: "desc" },
+          select: { id: true, details: true, date: true },
+          take: PER_GROUP,
+        }),
   ]);
   return {
     projects: projects.map((project) => ({
-      id: String(project._id),
+      id: project.id,
       title: project.name,
       subtitle: project.code,
       color: project.color,
-      href: `/projects/${project._id}`,
+      href: `/projects/${project.id}`,
     })),
     people: people.map((person) => ({
-      id: String(person._id),
+      id: person.id,
       title: person.name,
-      subtitle: person.role,
+      subtitle: person.role as string,
       color: person.avatarColor,
-      href: `/team?highlight=${person._id}`,
+      href: `/team?highlight=${person.id}`,
     })),
     tasks: tasks.map((task) => ({
-      id: String(task._id),
+      id: task.id,
       title: task.details.length > 80 ? `${task.details.slice(0, 80)}…` : task.details,
       subtitle: dayString(task.date),
       color: null,

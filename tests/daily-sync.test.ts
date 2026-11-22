@@ -2,12 +2,14 @@ import { format } from "date-fns";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as syncRoute from "@/app/api/integrations/daily-sync/route";
+import * as projectsRoute from "@/app/api/integrations/projects/route";
+import * as syncGuideRoute from "@/app/api/me/sync-guide/route";
 import * as tokensRoute from "@/app/api/me/tokens/route";
 import * as tokenRoute from "@/app/api/me/tokens/[id]/route";
 import * as tasksRoute from "@/app/api/tasks/route";
 import * as taskRoute from "@/app/api/tasks/[id]/route";
 import { setActivitySummarizer } from "@/lib/ai";
-import { Project, Task, User, WeeklyReport } from "@/models";
+import { prisma } from "@/lib/db/prisma";
 import { BASE_URL, call, makeCompany, request, resetDatabase, signInAs } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
@@ -23,8 +25,8 @@ beforeEach(async () => {
 });
 afterEach(() => setActivitySummarizer(undefined));
 
-async function tokenFor(person: { _id: unknown }) {
-  signInAs(person as Parameters<typeof signInAs>[0]);
+async function tokenFor(person: { id: string }) {
+  signInAs(person);
   const { body } = await call(tokensRoute.POST, request("POST", "/api/me/tokens", { body: { name: "Laptop" } }));
   signInAs(null);
   return body.data.token as string;
@@ -49,7 +51,7 @@ const activity = (overrides: object = {}) => ({
 });
 const sync = (token: string | null, body: object = activity()) => call(syncRoute.POST, syncRequest(token, body));
 const syncedTask = () =>
-  Task.findOne({ userId: company.it.developer._id, source: "sync" }).lean();
+  prisma.task.findFirst({ where: { userId: company.it.developer.id, source: "sync" } });
 
 describe("API tokens", () => {
   it("are shown once, listed by prefix and stored only as a hash", async () => {
@@ -75,7 +77,7 @@ describe("API tokens", () => {
 
   it("stop working when the user is deactivated", async () => {
     const token = await tokenFor(company.it.developer);
-    await User.updateOne({ _id: company.it.developer._id }, { isActive: false });
+    await prisma.user.updateMany({ where: { id: company.it.developer.id }, data: { isActive: false } });
     expect((await sync(token)).status).toBe(401);
   });
 
@@ -91,6 +93,47 @@ describe("API tokens", () => {
   });
 });
 
+describe("setup popup", () => {
+  it("is recorded as seen once, and the first time is kept", async () => {
+    const seenAt = async () =>
+      (await prisma.user.findUniqueOrThrow({ where: { id: company.it.developer.id } })).syncGuideSeenAt;
+    expect(await seenAt()).toBeNull();
+    signInAs(company.it.developer);
+    expect((await call(syncGuideRoute.POST, request("POST", "/api/me/sync-guide"))).status).toBe(200);
+    const first = await seenAt();
+    expect(first).toBeInstanceOf(Date);
+    await call(syncGuideRoute.POST, request("POST", "/api/me/sync-guide"));
+    expect(await seenAt()).toEqual(first);
+    signInAs(null);
+    expect((await call(syncGuideRoute.POST, request("POST", "/api/me/sync-guide"))).status).toBe(401);
+  });
+});
+
+describe("project list for setup", () => {
+  const list = (token: string | null) =>
+    call(
+      projectsRoute.GET,
+      new NextRequest(`${BASE_URL}/api/integrations/projects`, {
+        headers: { host: "localhost:3000", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      }),
+    );
+
+  it("lists the codes and names of the projects the token's owner can log on", async () => {
+    const { status, body } = await list(await tokenFor(company.it.developer));
+    expect(status).toBe(200);
+    expect(body.data).toContainEqual({ code: "PRJ", name: expect.any(String) });
+    const allowed = await prisma.project.count({
+      where: { status: { not: "Completed" }, members: { some: { userId: company.it.developer.id } } },
+    });
+    expect(body.data).toHaveLength(allowed);
+  });
+
+  it("needs a token", async () => {
+    signInAs(company.it.developer);
+    expect((await list(null)).status).toBe(401);
+  });
+});
+
 describe("daily sync", () => {
   it("creates one task per project with bullet points and no hours", async () => {
     const token = await tokenFor(company.it.developer);
@@ -99,8 +142,8 @@ describe("daily sync", () => {
     expect(body.data.results).toMatchObject([{ code: "PRJ", outcome: "created" }]);
     const task = await syncedTask();
     expect(task).toMatchObject({ details: "• Did: Add export\n• Did: Fix totals", hours: null, status: "Completed" });
-    const report = await WeeklyReport.findById(task!.weeklyReportId).lean();
-    expect(report?.totals.taskCount).toBe(1);
+    const report = await prisma.weeklyReport.findUnique({ where: { id: task!.weeklyReportId } });
+    expect(report?.taskCount).toBe(1);
   });
 
   it("refreshes its own task on a second run instead of duplicating it", async () => {
@@ -108,7 +151,7 @@ describe("daily sync", () => {
     await sync(token);
     const { body } = await sync(token, activity({ commits: [{ subject: "Add export" }, { subject: "Add tests" }] }));
     expect(body.data.results[0].outcome).toBe("updated");
-    expect(await Task.countDocuments({ userId: company.it.developer._id, source: "sync" })).toBe(1);
+    expect(await prisma.task.count({ where: { userId: company.it.developer.id, source: "sync" } })).toBe(1);
     expect((await syncedTask())?.details).toContain("Add tests");
     expect((await sync(token, activity({ commits: [{ subject: "Add export" }, { subject: "Add tests" }] }))).body.data.results[0].outcome).toBe("unchanged");
   });
@@ -118,7 +161,7 @@ describe("daily sync", () => {
     await sync(token);
     const task = await syncedTask();
     signInAs(company.it.developer);
-    await call(taskRoute.PATCH, request("PATCH", "/x", { body: { details: "My own words.", hours: 2 } }), { id: String(task!._id) });
+    await call(taskRoute.PATCH, request("PATCH", "/x", { body: { details: "My own words.", hours: 2 } }), { id: task!.id });
     const { body } = await sync(token, activity({ commits: [{ subject: "Something new" }] }));
     expect(body.data.results[0].outcome).toBe("kept");
     expect(await syncedTask()).toMatchObject({ details: "My own words.", hours: 2 });
@@ -142,15 +185,15 @@ describe("daily sync", () => {
   });
 
   it("skips projects that can't be logged, without failing the others", async () => {
-    await Project.create({
-      departmentId: company.it.department._id,
+    await prisma.project.create({ data: {
+      departmentId: company.it.department.id,
       name: "Second",
       code: "SEC",
       color: "sky",
-      ownerId: company.it.manager._id,
-      memberIds: [company.it.developer._id],
-      createdBy: company.it.manager._id,
-    });
+      ownerId: company.it.manager.id,
+      members: { create: [{ userId: company.it.developer.id }] },
+      createdBy: company.it.manager.id,
+    } });
     const token = await tokenFor(company.it.developer);
     const commits = [{ subject: "Work" }];
     const { body } = await sync(token, {
@@ -167,15 +210,15 @@ describe("daily sync", () => {
   it("never logs to another department's project with the same code", async () => {
     const token = await tokenFor(company.it.developer);
     await sync(token);
-    expect(await Task.countDocuments({ projectId: company.hr.project._id, source: "sync" })).toBe(0);
+    expect(await prisma.task.count({ where: { projectId: company.hr.project.id, source: "sync" } })).toBe(0);
   });
 
   it("skips a submitted week", async () => {
     const token = await tokenFor(company.it.developer);
     await sync(token);
     const task = await syncedTask();
-    await WeeklyReport.updateOne({ _id: task!.weeklyReportId }, { status: "SUBMITTED" });
-    await Task.deleteOne({ _id: task!._id });
+    await prisma.weeklyReport.updateMany({ where: { id: task!.weeklyReportId }, data: { status: "SUBMITTED" } });
+    await prisma.task.deleteMany({ where: { id: task!.id } });
     const { body } = await sync(token);
     expect(body.data.results[0]).toMatchObject({ outcome: "skipped" });
     expect(body.data.results[0].message).toMatch(/submitted/);

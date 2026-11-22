@@ -12,6 +12,7 @@ import { paletteVar, type Role } from "@/lib/constants";
 import { navItemsFor } from "@/lib/navigation";
 import type { SearchResults } from "@/lib/search/service";
 import { cn } from "@/lib/utils";
+import { seesAllDepartments } from "@/lib/constants";
 
 interface Item {
   id: string;
@@ -37,16 +38,18 @@ export function CommandPalette({ role }: { role: Role }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      // Chrome fires a keydown with no key when it autofills a field.
+      const key = event.key?.toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "k") {
         event.preventDefault();
         setOpen((current) => !current);
         return;
       }
       // The Tasks page handles N itself, so it can open the dialog in place.
       if (
-        event.key.toLowerCase() === "n" &&
+        key === "n" &&
         !event.metaKey && !event.ctrlKey && !event.altKey &&
-        role !== "CEO" &&
+        !seesAllDepartments(role) &&
         pathname !== "/tasks" &&
         !isTyping(event.target) &&
         !document.querySelector("[role=dialog]")
@@ -68,7 +71,7 @@ export function CommandPalette({ role }: { role: Role }) {
   const items = useMemo<Item[]>(() => {
     const needle = query.trim().toLowerCase();
     const pages: Item[] = [
-      ...(role === "CEO" ? [] : [{ id: "add-task", group: "Actions", title: "Add task", subtitle: "N", icon: Plus, href: "/tasks?new=1" }]),
+      ...(seesAllDepartments(role) ? [] : [{ id: "add-task", group: "Actions", title: "Add task", subtitle: "N", icon: Plus, href: "/tasks?new=1" }]),
       ...navItemsFor(role).map((item) => ({ id: item.href, group: "Pages", title: item.label, icon: LayoutGrid, href: item.href })),
     ].filter((item) => !needle || item.title.toLowerCase().includes(needle));
     if (!data || debounced.length < 2) return pages;
@@ -97,7 +100,7 @@ export function CommandPalette({ role }: { role: Role }) {
           aria-describedby={undefined}
           className="bg-surface fixed top-[12vh] left-1/2 z-50 w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 overflow-hidden rounded-xl border"
         >
-          <DialogPrimitive.Title className="sr-only">Search WorkLog</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="sr-only">Search GET List</DialogPrimitive.Title>
           <div className="flex items-center gap-2 border-b px-4">
             <Search className="text-muted size-4" aria-hidden />
             <input

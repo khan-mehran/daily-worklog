@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import ExcelJS from "exceljs";
 import { join, relative, sep } from "node:path";
-import { Types } from "mongoose";
+import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEPARTMENT_FILTER_COOKIE, type Role } from "@/lib/constants";
 import * as departmentsRoute from "@/app/api/departments/route";
@@ -25,9 +25,10 @@ import * as exportRoute from "@/app/api/export/tasks/route";
 import * as searchRoute from "@/app/api/search/route";
 import * as usersRoute from "@/app/api/users/route";
 import * as userRoute from "@/app/api/users/[id]/route";
-import * as inviteRoute from "@/app/api/users/[id]/invite/route";
-import { Department, User, WeeklyReport } from "@/models";
-import { call, FIXTURE_WEEK, makeCompany, request, resetDatabase, signInAs, type DepartmentFixture } from "./helpers";
+import * as approveUserRoute from "@/app/api/users/[id]/approve/route";
+import * as rejectUserRoute from "@/app/api/users/[id]/reject/route";
+import { prisma } from "@/lib/db/prisma";
+import { call, FIXTURE_WEEK, makeCompany, reportTotals, request, resetDatabase, signInAs, type DepartmentFixture } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
 
@@ -38,7 +39,9 @@ type Company = Awaited<ReturnType<typeof makeCompany>>;
  */
 const ROUTE_POLICIES: Record<string, string> = {
   "auth/[...nextauth]": "Auth.js protocol endpoints. They expose no department data.",
-  "auth/invite/accept": "Public. Authorised by the invite token alone. See users.test.ts.",
+  "auth/sso/entra/login": "Public. Redirects to Microsoft sign-in. It reads and returns no data.",
+  "auth/sso/entra/callback":
+    "Public. Completes Microsoft sign-in for an existing, active account only. It returns no data.",
   me: "Returns the caller only.",
   "me/preferences": "Changes the caller only.",
   "me/tokens": "Lists and creates the caller's own API tokens only. Tested in daily-sync.test.ts.",
@@ -48,7 +51,10 @@ const ROUTE_POLICIES: Record<string, string> = {
   "me/department-filter": "CEO only. Tested below.",
   users: "Tested below.",
   "users/[id]": "Tested below.",
-  "users/[id]/invite": "Tested below.",
+  "users/[id]/approve": "Super Admin and CEO only. Tested below and in user-access.test.ts.",
+  "users/[id]/reject": "Super Admin and CEO only. Tested below and in user-access.test.ts.",
+  "site-settings/approval": "Super Admin only. Organisation-wide, with no department data. Tested in site-settings.test.ts.",
+  "site-settings/env": "Super Admin only. Never returns a secret's value. Tested in site-settings.test.ts.",
   departments: "Tested below.",
   "departments/[id]": "Tested below.",
   "departments/[id]/archive": "Tested below.",
@@ -72,7 +78,6 @@ const ROUTE_POLICIES: Record<string, string> = {
   notifications: "Own notifications only. Tested in notifications-and-reminders.test.ts.",
   "notifications/read": "Own notifications only. Tested in notifications-and-reminders.test.ts.",
   "notifications/stream": "Own notifications only.",
-  "me/password": "Changes the caller only.",
   "dashboard/developer": "Own work only. Tested in dashboards-export-ai.test.ts.",
   "dashboard/lead": "Tested below and in dashboards-export-ai.test.ts.",
   "dashboard/manager": "Tested below and in dashboards-export-ai.test.ts.",
@@ -122,9 +127,9 @@ describe("department isolation", () => {
     ["HR", "IT", "hr", "it"],
   ] as const)("%s staff looking at %s", (_own, _other, ownKey, otherKey) => {
     describe.each(NON_CEO_ROLES)("as %s", (actorKey) => {
-      const actor = () => company[ownKey][actorKey] as { _id: Types.ObjectId };
-      const otherDepartment = () => String(company[otherKey].department._id);
-      const otherUser = () => String(company[otherKey].developer._id);
+      const actor = () => company[ownKey][actorKey] as { id: string };
+      const otherDepartment = () => company[otherKey].department.id;
+      const otherUser = () => company[otherKey].developer.id;
 
       beforeEach(() => signInAs(actor()));
 
@@ -132,7 +137,7 @@ describe("department isolation", () => {
         const { status, body } = await call(departmentsRoute.GET, request("GET", "/api/departments"));
         expect(status).toBe(200);
         expect(body.data.map((row: { id: string }) => row.id)).toEqual([
-          String(company[ownKey].department._id),
+          company[ownKey].department.id,
         ]);
       });
 
@@ -165,13 +170,19 @@ describe("department isolation", () => {
         expect(status).toBe(404);
       });
 
-      it("POST /users/:id/invite for the other department is a 404", async () => {
-        const { status } = await call(
-          inviteRoute.POST,
-          request("POST", `/api/users/${otherUser()}/invite`),
+      it("POST /users/:id/approve and /reject for the other department are a 404", async () => {
+        const approve = await call(
+          approveUserRoute.POST,
+          request("POST", `/api/users/${otherUser()}/approve`, { body: { role: "DEVELOPER" } }),
           { id: otherUser() },
         );
-        expect(status).toBe(404);
+        expect(approve.status).toBe(404);
+        const reject = await call(
+          rejectUserRoute.POST,
+          request("POST", `/api/users/${otherUser()}/reject`),
+          { id: otherUser() },
+        );
+        expect(reject.status).toBe(404);
       });
 
       it.each([
@@ -180,9 +191,9 @@ describe("department isolation", () => {
         ["DELETE", () => projectRoute.DELETE, undefined],
         ["POST members", () => membersRoute.POST, { add: [] as string[], remove: ["x"] }],
       ] as const)("%s on the other department's project is a 404", async (label, handler, body) => {
-        const id = String(company[otherKey].project._id);
+        const id = company[otherKey].project.id;
         const payload =
-          body && "remove" in body ? { remove: [String(company[otherKey].developer._id)] } : body;
+          body && "remove" in body ? { remove: [company[otherKey].developer.id] } : body;
         const { status } = await call(
           handler(),
           request(label.split(" ")[0]!, `/api/projects/${id}`, { body: payload }),
@@ -199,7 +210,7 @@ describe("department isolation", () => {
         ]) {
           const { body } = await call(projectsRoute.GET, request("GET", `/api/projects${query}`));
           const ids = body.data.map((row: { id: string }) => row.id);
-          expect(ids).not.toContain(String(company[otherKey].project._id));
+          expect(ids).not.toContain(company[otherKey].project.id);
         }
         const withCookie = await call(
           projectsRoute.GET,
@@ -208,7 +219,7 @@ describe("department isolation", () => {
           }),
         );
         expect(withCookie.body.data.map((row: { id: string }) => row.id)).not.toContain(
-          String(company[otherKey].project._id),
+          company[otherKey].project.id,
         );
       });
 
@@ -218,7 +229,7 @@ describe("department isolation", () => {
         ["POST request-changes", () => changesRoute.POST],
         ["POST submit", () => submitRoute.POST],
       ] as const)("%s on the other department's report is a 404", async (label, handler) => {
-        const id = String(company[otherKey].report._id);
+        const id = company[otherKey].report.id;
         const { status } = await call(
           handler(),
           request(label.split(" ")[0]!, `/api/reports/${id}`, {
@@ -258,10 +269,7 @@ describe("department isolation", () => {
       });
 
       it("never sees the other department's reports in their review queue", async () => {
-        await WeeklyReport.updateOne(
-          { _id: company[otherKey].report._id },
-          { status: "SUBMITTED", currentApproverId: actor()._id },
-        );
+        await prisma.weeklyReport.updateMany({ where: { id: company[otherKey].report.id }, data: { status: "SUBMITTED", currentApproverId: actor().id } });
         const { body } = await call(queueRoute.GET, request("GET", "/api/reports/review-queue"));
         expect(body.data).toEqual([]);
       });
@@ -282,13 +290,13 @@ describe("department isolation", () => {
           }),
           { id: otherDepartment() },
         );
-        const unchanged = await Department.findById(otherDepartment()).lean();
+        const unchanged = await prisma.department.findUnique({ where: { id: otherDepartment() } });
         expect(unchanged?.description).not.toBe("hacked");
       });
 
       it("/me returns only themselves", async () => {
         const { body } = await call(meRoute.GET, request("GET", "/api/me"));
-        expect(body.data.id).toBe(String(actor()._id));
+        expect(body.data.id).toBe(String(actor().id));
       });
     });
 
@@ -306,27 +314,27 @@ describe("department isolation", () => {
       it("sees only their department, with the CEO left out", async () => {
         const ids = await listedIds();
         expect(ids).toHaveLength(4);
-        expect(ids).toContain(String(company[ownKey].developer._id));
-        expect(ids).not.toContain(String(company[otherKey].developer._id));
-        expect(ids).not.toContain(String(company.ceo._id));
+        expect(ids).toContain(company[ownKey].developer.id);
+        expect(ids).not.toContain(company[otherKey].developer.id);
+        expect(ids).not.toContain(company.ceo.id);
       });
 
       it("can't reach the other department with a departmentId query", async () => {
-        const ids = await listedIds(`?departmentId=${company[otherKey].department._id}`);
-        expect(ids).not.toContain(String(company[otherKey].developer._id));
-        expect(ids).toContain(String(company[ownKey].developer._id));
+        const ids = await listedIds(`?departmentId=${company[otherKey].department.id}`);
+        expect(ids).not.toContain(company[otherKey].developer.id);
+        expect(ids).toContain(company[ownKey].developer.id);
       });
 
       it("can't reach the other department with the CEO's switcher cookie", async () => {
         const { body } = await call(
           usersRoute.GET,
           request("GET", "/api/users", {
-            cookie: `${DEPARTMENT_FILTER_COOKIE}=${company[otherKey].department._id}`,
+            cookie: `${DEPARTMENT_FILTER_COOKIE}=${company[otherKey].department.id}`,
           }),
         );
         const ids = body.data.map((row: { id: string }) => row.id);
-        expect(ids).not.toContain(String(company[otherKey].developer._id));
-        expect(ids).toContain(String(company[ownKey].developer._id));
+        expect(ids).not.toContain(company[otherKey].developer.id);
+        expect(ids).toContain(company[ownKey].developer.id);
       });
 
       it("can't reach the other department by searching for its people", async () => {
@@ -335,14 +343,14 @@ describe("department isolation", () => {
       });
 
       it("can't use the unassigned flag to see outside their department", async () => {
-        const unassigned = await User.create({
+        const unassigned = await prisma.user.create({ data: {
           name: "Free Manager",
           email: "free@test.local",
           role: "MANAGER",
           departmentId: null,
-          reportsTo: company.ceo._id,
-        });
-        expect(await listedIds("?unassigned=true")).not.toContain(String(unassigned._id));
+          reportsTo: company.ceo.id,
+        } });
+        expect(await listedIds("?unassigned=true")).not.toContain(unassigned.id);
       });
     });
   });
@@ -354,15 +362,15 @@ describe("department isolation", () => {
       expect(list.status).toBe(403);
       const self = await call(
         userRoute.GET,
-        request("GET", `/api/users/${company.it.developer._id}`),
-        { id: String(company.it.developer._id) },
+        request("GET", `/api/users/${company.it.developer.id}`),
+        { id: company.it.developer.id },
       );
       expect(self.status).toBe(200);
     });
 
     it("hides a colleague's record from a developer", async () => {
       signInAs(company.it.developer);
-      const id = String(company.it.lead._id);
+      const id = company.it.lead.id;
       const { status } = await call(userRoute.GET, request("GET", `/api/users/${id}`), { id });
       expect(status).toBe(404);
     });
@@ -371,7 +379,7 @@ describe("department isolation", () => {
       "stops a %s from changing their own department's record",
       async (actorKey) => {
         signInAs(company.it[actorKey]);
-        const id = String(company.it.department._id);
+        const id = company.it.department.id;
         const { status } = await call(
           departmentRoute.PATCH,
           request("PATCH", `/api/departments/${id}`, { body: { description: "x" } }),
@@ -404,8 +412,8 @@ describe("department isolation", () => {
               name: "Rogue Dev",
               email: "dev@test.local",
               role: "DEVELOPER",
-              departmentId: String(company.hr.department._id),
-              reportsTo: String(company.hr.lead._id),
+              departmentId: company.hr.department.id,
+              reportsTo: company.hr.lead.id,
             },
           }),
         );
@@ -415,24 +423,24 @@ describe("department isolation", () => {
 
     it("stops a user promoting themselves through their own record", async () => {
       signInAs(company.it.developer);
-      const id = String(company.it.developer._id);
+      const id = company.it.developer.id;
       const { status } = await call(
         userRoute.PATCH,
         request("PATCH", `/api/users/${id}`, { body: { role: "MANAGER" } }),
         { id },
       );
       expect(status).toBe(403);
-      expect((await User.findById(id).lean())?.role).toBe("DEVELOPER");
+      expect((await prisma.user.findUnique({ where: { id: id } }))?.role).toBe("DEVELOPER");
     });
 
     it("gives an unassigned manager no department and no people", async () => {
-      const free = await User.create({
+      const free = await prisma.user.create({ data: {
         name: "Free Manager",
         email: "free@test.local",
         role: "MANAGER",
         departmentId: null,
-        reportsTo: company.ceo._id,
-      });
+        reportsTo: company.ceo.id,
+      } });
       signInAs(free);
       const departments = await call(departmentsRoute.GET, request("GET", "/api/departments"));
       expect(departments.body.data).toEqual([]);
@@ -456,7 +464,7 @@ describe("department isolation", () => {
       const switched = await call(
         filterRoute.PUT,
         request("PUT", "/api/me/department-filter", {
-          body: { departmentId: String(company.hr.department._id) },
+          body: { departmentId: company.hr.department.id },
         }),
       );
       expect(switched.status).toBe(200);
@@ -466,36 +474,29 @@ describe("department isolation", () => {
       const hrOnly = await call(usersRoute.GET, request("GET", "/api/users", { cookie }));
       const ids = hrOnly.body.data.map((row: { id: string }) => row.id);
       expect(ids).toHaveLength(4);
-      expect(ids).toContain(String(company.hr.developer._id));
-      expect(ids).not.toContain(String(company.it.developer._id));
+      expect(ids).toContain(company.hr.developer.id);
+      expect(ids).not.toContain(company.it.developer.id);
     });
 
     it("gets a 404 when switching to a department that doesn't exist", async () => {
       const { status } = await call(
         filterRoute.PUT,
         request("PUT", "/api/me/department-filter", {
-          body: { departmentId: String(new Types.ObjectId()) },
+          body: { departmentId: randomUUID() },
         }),
       );
       expect(status).toBe(404);
     });
 
     it("only sees approved work in a department's mini dashboard", async () => {
-      const id = String(company.it.department._id);
-      const { WeeklyReport } = await import("@/models");
-      await WeeklyReport.create({
-        userId: company.it.otherDeveloper._id,
-        departmentId: company.it.department._id,
+      const id = company.it.department.id;
+      await prisma.weeklyReport.create({ data: {
+        userId: company.it.otherDeveloper.id,
+        departmentId: company.it.department.id,
         ...FIXTURE_WEEK,
         status: "LEAD_APPROVED",
-        totals: {
-          hours: 99,
-          taskCount: 1,
-          completedCount: 1,
-          blockedCount: 0,
-          byProject: [{ projectId: company.it.project._id, hours: 99, taskCount: 1 }],
-        },
-      });
+        ...reportTotals(company.it.project.id, 99),
+      } });
       const { body } = await call(
         departmentRoute.GET,
         request("GET", `/api/departments/${id}`),
@@ -518,7 +519,7 @@ describe("department isolation", () => {
 
     it("rejects a write from another origin", async () => {
       signInAs(company.ceo);
-      const id = String(company.it.department._id);
+      const id = company.it.department.id;
       const { status } = await call(
         departmentRoute.PATCH,
         request("PATCH", `/api/departments/${id}`, {
@@ -540,14 +541,12 @@ describe("department isolation", () => {
       expect(status).toBe(404);
     });
 
-    it("never returns password or invite fields", async () => {
-      await User.updateOne(
-        { _id: company.it.developer._id },
-        { passwordHash: "secret-hash", inviteTokenHash: "secret-invite" },
-      );
+    it("returns only the listed user fields", async () => {
       signInAs(company.ceo);
       const list = await call(usersRoute.GET, request("GET", "/api/users?limit=100"));
-      expect(JSON.stringify(list.body)).not.toMatch(/secret-hash|secret-invite|passwordHash/);
+      expect(Object.keys(list.body.data[0]).sort()).toEqual(
+        ["approval", "avatarColor", "department", "email", "id", "isActive", "name", "reportsTo", "role"].sort(),
+      );
     });
   });
 });

@@ -2,15 +2,18 @@ import { NextResponse } from "next/server";
 import { notFound } from "@/lib/api/errors";
 import { authedRoute, parseBody } from "@/lib/api/handler";
 import { DEPARTMENT_FILTER_COOKIE } from "@/lib/constants";
-import { isCEO } from "@/lib/permissions";
-import { Department } from "@/models";
+import { prisma } from "@/lib/db/prisma";
+import { isOrgWide } from "@/lib/permissions";
 import { departmentFilterSchema } from "@/validators/user";
 
-// The CEO's department switcher. Other roles have no switcher, so for them this route doesn't exist.
+// The department switcher of the CEO and Super Admin. Other roles have none, so for them this
+// route doesn't exist.
 export const PUT = authedRoute(async ({ req, user }) => {
-  if (!isCEO(user)) throw notFound();
+  if (!isOrgWide(user)) throw notFound();
   const { departmentId } = await parseBody(req, departmentFilterSchema);
-  if (departmentId && !(await Department.exists({ _id: departmentId }))) throw notFound();
+  if (departmentId && !(await prisma.department.findUnique({ where: { id: departmentId }, select: { id: true } }))) {
+    throw notFound();
+  }
 
   const response = NextResponse.json({ data: { departmentId } });
   if (departmentId) {

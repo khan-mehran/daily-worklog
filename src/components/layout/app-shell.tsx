@@ -18,6 +18,7 @@ import {
   FolderKanban,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Sun,
   Users,
   type LucideIcon,
@@ -38,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { CommandPalette } from "./command-palette";
 import { DateRangePicker, DateRangeProvider } from "./date-range";
 import { NotificationBell } from "./notification-bell";
+import { seesAllDepartments } from "@/lib/constants";
 
 export interface ShellDepartment {
   id: string;
@@ -64,11 +66,12 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   team: Users,
   reviews: ClipboardCheck,
   departments: Building2,
-  admin: ShieldCheck,
+  users: ShieldCheck,
+  site: SlidersHorizontal,
   settings: Settings,
 };
 
-const SIDEBAR_KEY = "worklog-sidebar-collapsed";
+const SIDEBAR_KEY = "getl-sidebar-collapsed";
 const ITEM_MENU_CLASS =
   "data-[highlighted]:bg-subtle flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm outline-none";
 
@@ -120,7 +123,7 @@ function Sidebar({
           <NotebookPen className="size-5" aria-hidden />
         </span>
         {collapsed ? null : (
-          <span className="text-lg font-semibold tracking-tight text-white">WorkLog</span>
+          <span className="text-lg font-semibold tracking-tight text-white">GET List</span>
         )}
       </div>
       <div
@@ -416,7 +419,7 @@ export function AppShell({
               <NotebookPen className="size-5" aria-hidden />
             </span>
             <div className="min-w-0 flex-1">
-              {user.role === "CEO" ? (
+              {seesAllDepartments(user.role) ? (
                 <DepartmentSwitcher
                   departments={departments}
                   selectedDepartmentId={selectedDepartmentId}

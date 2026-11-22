@@ -1,30 +1,50 @@
-import { expect, test, type Page } from "@playwright/test";
-
-const PASSWORD = "WorkLog!2026";
-
-async function signIn(page: Page, email: string) {
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/dashboard");
-}
+import { expect, test } from "@playwright/test";
+import { signIn } from "./sign-in";
 
 test("sends signed-out visitors to the login page", async ({ page }) => {
   await page.goto("/departments");
   await expect(page).toHaveURL(/\/login\?callbackUrl=%2Fdepartments/);
 });
 
-test("rejects a wrong password with a clear message", async ({ page }) => {
+test("the sign-in page offers Microsoft and nothing else", async ({ page }) => {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("dev2.acc@worklog.demo");
-  await page.getByLabel("Password").fill("wrong-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByText("don't match")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in with Microsoft" })).toBeVisible();
+  await expect(page.getByLabel("Password")).toHaveCount(0);
+  await expect(page.getByLabel("Email")).toHaveCount(0);
+});
+
+test("someone waiting for approval is told so on the sign-in page", async ({ page }) => {
+  await page.goto("/login?status=pending");
+  await expect(page.getByText("Waiting for approval")).toBeVisible();
+  await expect(page.getByText("as soon as they approve it")).toBeVisible();
+  await page.goto("/login?status=rejected");
+  await expect(page.getByText("Access not approved")).toBeVisible();
+});
+
+test("a Super Admin approves a waiting person with a role, department and Team Lead", async ({ page }) => {
+  await signIn(page, "admin@getl.demo");
+  await page.goto("/users");
+  await expect(page.getByText("1 person is waiting for approval.")).toBeVisible();
+
+  const row = page.getByRole("row", { name: /Nadia Haddad/ });
+  await expect(row.getByText("Waiting for approval")).toBeVisible();
+  await row.getByRole("button", { name: "Approve" }).click();
+
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Department", { exact: true }).click();
+  await page.getByRole("option", { name: "IT" }).click();
+  await dialog.getByLabel("Reports to").click();
+  await page.getByRole("option").first().click();
+  await dialog.getByRole("button", { name: "Approve" }).click();
+
+  await expect(page.getByText("Nadia Haddad can now sign in.")).toBeVisible();
+  await expect(row.getByText("Active")).toBeVisible();
+  await expect(row.getByText("Developer")).toBeVisible();
+  await expect(page.getByText("is waiting for approval.")).toHaveCount(0);
 });
 
 test("the CEO can switch departments and add one with a new manager", async ({ page }) => {
-  await signIn(page, "ceo@worklog.demo");
+  await signIn(page, "ceo@getl.demo");
   await expect(page.getByRole("link", { name: "Departments" }).first()).toBeVisible();
 
   await page.getByRole("combobox", { name: "Department filter" }).click();
@@ -46,7 +66,7 @@ test("the CEO can switch departments and add one with a new manager", async ({ p
   await page.getByLabel("Code", { exact: true }).fill(`L${String(Date.now()).slice(-6)}`);
   await page.getByRole("radio", { name: "Invite a new one" }).click();
   await page.getByLabel("Full name").fill("Nour Hassan");
-  await page.getByLabel("Work email").fill(`nour.${Date.now()}@worklog.demo`);
+  await page.getByLabel("Work email").fill(`nour.${Date.now()}@getl.demo`);
   await page.getByRole("button", { name: "Create department" }).click();
   await expect(page.getByRole("heading", { name })).toBeVisible();
 
@@ -56,7 +76,7 @@ test("the CEO can switch departments and add one with a new manager", async ({ p
 });
 
 test("a department manager sees only their own department", async ({ page }) => {
-  await signIn(page, "manager.it@worklog.demo");
+  await signIn(page, "manager.it@getl.demo");
   await expect(page.getByRole("combobox", { name: "Department filter" })).toHaveCount(0);
   await expect(page.locator("header").getByText("IT", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Departments" })).toHaveCount(0);
@@ -69,15 +89,15 @@ test("a department manager sees only their own department", async ({ page }) => 
   expect(data.map((department: { code: string }) => department.code)).toEqual(["IT"]);
 });
 
-test("a developer has no team, reviews or admin pages", async ({ page }) => {
-  await signIn(page, "dev1.it@worklog.demo");
-  for (const path of ["/team", "/reviews", "/admin", "/departments"]) {
+test("a developer has no team, reviews, users or departments pages", async ({ page }) => {
+  await signIn(page, "dev1.it@getl.demo");
+  for (const path of ["/team", "/reviews", "/users", "/departments"]) {
     expect((await page.goto(path))?.status(), path).toBe(404);
   }
 });
 
 test("the theme choice applies and is saved to the account", async ({ page }) => {
-  await signIn(page, "lead1.it@worklog.demo");
+  await signIn(page, "lead1.it@getl.demo");
   await page.getByRole("button", { name: "Change theme" }).click();
   await page.getByRole("menuitem", { name: "Dark" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);

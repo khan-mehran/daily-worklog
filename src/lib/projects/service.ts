@@ -1,9 +1,10 @@
-import { Types, type FilterQuery } from "mongoose";
+import type { Prisma } from "@prisma/client";
 import { badRequest, conflict, forbidden, notFound } from "@/lib/api/errors";
+import type { PaletteColor, ProjectStatus, Role, TaskStatus } from "@/lib/constants";
+import { prisma } from "@/lib/db/prisma";
+import { notify } from "@/lib/notifications";
 import { canManageProjects, projectScope, type Actor } from "@/lib/permissions";
 import { visibleReportsFilter } from "@/lib/reports/visibility";
-import { escapeRegex } from "@/lib/utils";
-import { AuditLog, Department, Project, Task, User, WeeklyReport, type IProject } from "@/models";
 import type {
   CreateProjectInput,
   ListProjectsQuery,
@@ -14,87 +15,68 @@ import type {
 const WEEKS_IN_CHART = 8;
 const RECENT_TASKS = 10;
 
-const toDay = (value: string | null | undefined) =>
-  value ? new Date(`${value}T00:00:00.000Z`) : null;
+const toDay = (value: string | null | undefined) => (value ? new Date(`${value}T00:00:00.000Z`) : null);
 const fromDay = (value: Date | null) => (value ? value.toISOString().slice(0, 10) : null);
 
-interface PersonRef {
-  _id: Types.ObjectId;
-  name: string;
-  role: string;
-  avatarColor: string;
-  isActive: boolean;
-}
+const PROJECT_INCLUDE = {
+  members: {
+    orderBy: [{ createdAt: "asc" }, { user: { name: "asc" } }],
+    select: { user: { select: { id: true, name: true, role: true, avatarColor: true, isActive: true } } },
+  },
+  department: { select: { id: true, name: true, code: true, color: true } },
+} satisfies Prisma.ProjectInclude;
 
-interface DepartmentRef {
-  _id: Types.ObjectId;
-  name: string;
-  code: string;
-  color: string;
-}
+type ProjectRecord = Prisma.ProjectGetPayload<{ include: typeof PROJECT_INCLUDE }>;
 
-type PopulatedProject = Omit<IProject, "memberIds" | "departmentId"> & {
-  memberIds: PersonRef[];
-  departmentId: DepartmentRef;
-};
-
-const PROJECT_POPULATE = [
-  { path: "memberIds", select: "name role avatarColor isActive" },
-  { path: "departmentId", select: "name code color" },
-];
-
-function serialise(project: PopulatedProject) {
+function serialise(project: ProjectRecord) {
   return {
-    id: String(project._id),
+    id: project.id,
     name: project.name,
     code: project.code,
     description: project.description,
-    color: project.color,
-    status: project.status,
+    color: project.color as PaletteColor,
+    status: project.status as ProjectStatus,
     startDate: fromDay(project.startDate),
     endDate: fromDay(project.endDate),
     department: {
-      id: String(project.departmentId._id),
-      name: project.departmentId.name,
-      code: project.departmentId.code,
-      color: project.departmentId.color,
+      id: project.department.id,
+      name: project.department.name,
+      code: project.department.code,
+      color: project.department.color as PaletteColor,
     },
-    members: project.memberIds.map((member) => ({
-      id: String(member._id),
-      name: member.name,
-      role: member.role,
-      avatarColor: member.avatarColor,
-      isActive: member.isActive,
+    members: project.members.map(({ user }) => ({
+      id: user.id,
+      name: user.name,
+      role: user.role as Role,
+      avatarColor: user.avatarColor as PaletteColor,
+      isActive: user.isActive,
     })),
   };
 }
 
-export async function listProjects(
-  actor: Actor,
-  selectedDepartmentId: string | null,
-  query: ListProjectsQuery,
-) {
+export async function listProjects(actor: Actor, selectedDepartmentId: string | null, query: ListProjectsQuery) {
   // projectScope ignores the requested department for everyone but the CEO.
-  const filter: FilterQuery<IProject> = {
+  const where: Prisma.ProjectWhereInput = {
     ...projectScope(actor, query.departmentId ?? selectedDepartmentId),
     ...(query.status ? { status: query.status } : {}),
     ...(query.search
       ? {
-          $or: [
-            { name: { $regex: escapeRegex(query.search), $options: "i" } },
-            { code: { $regex: escapeRegex(query.search), $options: "i" } },
+          OR: [
+            { name: { contains: query.search, mode: "insensitive" } },
+            { code: { contains: query.search, mode: "insensitive" } },
           ],
         }
       : {}),
   };
   const [projects, total] = await Promise.all([
-    Project.find(filter)
-      .sort({ name: 1 })
-      .skip((query.page - 1) * query.limit)
-      .limit(query.limit)
-      .populate<{ memberIds: PersonRef[]; departmentId: DepartmentRef }>(PROJECT_POPULATE)
-      .lean(),
-    Project.countDocuments(filter),
+    prisma.project.findMany({
+      where,
+      orderBy: { name: "asc" },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      include: PROJECT_INCLUDE,
+    }),
+    prisma.project.count({ where }),
   ]);
   return { projects: projects.map(serialise), total };
 }
@@ -103,196 +85,229 @@ export async function listProjects(
  * Finds a project the actor may see, or throws a 404. Always call this before any role check, so
  * a project outside the actor's visibility is a 404 rather than a 403.
  */
-async function requireVisibleProject(actor: Actor, id: Types.ObjectId) {
-  const project = await Project.findOne({ _id: id, ...projectScope(actor) });
+async function requireVisibleProject(actor: Actor, id: string) {
+  const project = await prisma.project.findFirst({ where: { id, ...projectScope(actor) } });
   if (!project) throw notFound();
   return project;
 }
 
-async function requireManageableProject(actor: Actor, id: Types.ObjectId) {
+/**
+ * The department whose projects the actor adds and manages: their own for a Manager or Team Lead,
+ * and the department they lead for a Super Admin (the IT department, which has no Manager).
+ */
+export async function projectDepartmentOf(actor: Actor): Promise<string | null> {
+  if (canManageProjects(actor)) return actor.departmentId;
+  if (actor.role !== "SUPER_ADMIN") return null;
+  const led = await prisma.department.findFirst({ where: { managerId: actor.id }, select: { id: true } });
+  return led?.id ?? null;
+}
+
+async function requireManageableProject(actor: Actor, id: string) {
   const project = await requireVisibleProject(actor, id);
-  if (!canManageProjects(actor)) throw forbidden();
+  // A Super Admin sees every department's projects, but manages only their own department's.
+  if ((await projectDepartmentOf(actor)) !== project.departmentId) throw forbidden();
   await requireActiveDepartment(project.departmentId);
   return project;
 }
 
-async function requireActiveDepartment(departmentId: Types.ObjectId) {
-  const department = await Department.findById(departmentId).select("status").lean();
+async function requireActiveDepartment(departmentId: string) {
+  const department = await prisma.department.findUnique({ where: { id: departmentId }, select: { status: true } });
   if (department?.status !== "Active") throw conflict("This department is archived.");
 }
 
-async function assertCodeFree(departmentId: Types.ObjectId, code: string, exceptId?: Types.ObjectId) {
-  const clash = await Project.exists({
-    departmentId,
-    code: code.toUpperCase(),
-    ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+async function assertCodeFree(departmentId: string, code: string, exceptId?: string) {
+  const clash = await prisma.project.findFirst({
+    where: { departmentId, code: code.toUpperCase(), ...(exceptId ? { id: { not: exceptId } } : {}) },
+    select: { id: true },
   });
   if (clash) throw conflict("A project with this code already exists in your department.");
 }
 
 /** Only active people from the project's own department can be assigned to it. */
-async function assertAssignable(departmentId: Types.ObjectId, ids: string[]) {
+async function assertAssignable(departmentId: string, ids: string[]) {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return unique;
-  const valid = await User.countDocuments({ _id: { $in: unique }, departmentId, isActive: true });
+  const valid = await prisma.user.count({ where: { id: { in: unique }, departmentId, isActive: true } });
   if (valid !== unique.length) {
     throw badRequest("Only active people in this department can be assigned to its projects.");
   }
   return unique;
 }
 
-function audit(actor: Actor, action: string, id: Types.ObjectId, meta: Record<string, unknown>) {
-  return AuditLog.create({ actorId: actor.id, action, targetType: "Project", targetId: id, meta });
+function audit(actor: Actor, action: string, id: string, meta: Prisma.InputJsonObject) {
+  return prisma.auditLog.create({
+    data: { actorId: actor.id, action, targetType: "Project", targetId: id, meta },
+  });
+}
+
+/**
+ * Tells people they've been assigned to a project, in the app and by email. Whoever made the
+ * assignment isn't told about adding themselves.
+ */
+async function notifyAssigned(
+  actor: Actor,
+  project: { id: string; name: string; departmentId: string },
+  userIds: string[],
+) {
+  const recipients = userIds.filter((userId) => userId !== actor.id);
+  if (recipients.length === 0) return;
+  const assigner = await prisma.user.findUnique({ where: { id: actor.id }, select: { name: true } });
+  const by = assigner?.name ?? "Your manager";
+  for (const recipientId of recipients) {
+    await notify({
+      recipientId,
+      departmentId: project.departmentId,
+      type: "PROJECT_ASSIGNED",
+      title: `You've been assigned to ${project.name}`,
+      message: `${by} assigned you to the project ${project.name}. You can now log your work on it.`,
+      link: `/projects/${project.id}`,
+      email: true,
+    });
+  }
 }
 
 export async function createProject(actor: Actor, input: CreateProjectInput) {
-  if (!canManageProjects(actor)) throw forbidden();
-  if (!actor.departmentId) throw forbidden("You need a department before you can add projects.");
-  const departmentId = new Types.ObjectId(actor.departmentId);
+  const departmentId = await projectDepartmentOf(actor);
+  if (!departmentId) {
+    throw canManageProjects(actor) ? forbidden("You need a department before you can add projects.") : forbidden();
+  }
   await requireActiveDepartment(departmentId);
   await assertCodeFree(departmentId, input.code);
   const memberIds = await assertAssignable(departmentId, input.memberIds);
 
-  const project = await Project.create({
-    ...input,
-    departmentId,
-    startDate: toDay(input.startDate),
-    endDate: toDay(input.endDate),
-    memberIds,
-    ownerId: actor.id,
-    createdBy: actor.id,
+  const project = await prisma.project.create({
+    data: {
+      name: input.name,
+      code: input.code,
+      description: input.description,
+      color: input.color,
+      status: input.status,
+      departmentId,
+      startDate: toDay(input.startDate),
+      endDate: toDay(input.endDate),
+      ownerId: actor.id,
+      createdBy: actor.id,
+      members: { create: memberIds.map((userId) => ({ userId })) },
+    },
   });
-  await audit(actor, "project.create", project._id, { memberCount: memberIds.length });
+  await audit(actor, "project.create", project.id, { memberCount: memberIds.length });
+  await notifyAssigned(actor, project, memberIds);
   return project;
 }
 
-export async function updateProject(actor: Actor, id: Types.ObjectId, patch: UpdateProjectInput) {
+export async function updateProject(actor: Actor, id: string, patch: UpdateProjectInput) {
   const project = await requireManageableProject(actor, id);
   if (patch.code) await assertCodeFree(project.departmentId, patch.code, id);
 
   const { startDate, endDate, ...fields } = patch;
-  project.set(fields);
-  if (startDate !== undefined) project.startDate = toDay(startDate);
-  if (endDate !== undefined) project.endDate = toDay(endDate);
+  const nextStart = startDate !== undefined ? toDay(startDate) : project.startDate;
+  const nextEnd = endDate !== undefined ? toDay(endDate) : project.endDate;
   // Checked here too, because a patch may change only one of the two dates.
-  if (project.startDate && project.endDate && project.endDate < project.startDate) {
+  if (nextStart && nextEnd && nextEnd < nextStart) {
     throw badRequest("The end date can't be before the start date.");
   }
-  await project.save();
+  const updated = await prisma.project.update({
+    where: { id },
+    data: { ...fields, startDate: nextStart, endDate: nextEnd },
+  });
   await audit(actor, "project.update", id, { changes: Object.keys(patch) });
-  return project;
+  return updated;
 }
 
-export async function updateProjectMembers(
-  actor: Actor,
-  id: Types.ObjectId,
-  { add, remove }: UpdateMembersInput,
-) {
+export async function updateProjectMembers(actor: Actor, id: string, { add, remove }: UpdateMembersInput) {
   const project = await requireManageableProject(actor, id);
   const toAdd = await assertAssignable(project.departmentId, add);
   const removing = new Set(remove);
   const finalAdd = toAdd.filter((memberId) => !removing.has(memberId));
-  const toObjectIds = (ids: string[]) => ids.map((memberId) => new Types.ObjectId(memberId));
 
-  // $addToSet and $pullAll can't target one array in a single update, so these run in order.
-  await Project.bulkWrite([
-    {
-      updateOne: {
-        filter: { _id: id },
-        update: { $addToSet: { memberIds: { $each: toObjectIds(finalAdd) } } },
-      },
-    },
-    {
-      updateOne: {
-        filter: { _id: id },
-        update: { $pullAll: { memberIds: toObjectIds(remove) } },
-      },
-    },
-  ]);
+  const newlyAdded = await prisma.$transaction(async (tx) => {
+    const existing = await tx.projectMember.findMany({
+      where: { projectId: id, userId: { in: finalAdd } },
+      select: { userId: true },
+    });
+    const already = new Set(existing.map((member) => member.userId));
+    const fresh = finalAdd.filter((memberId) => !already.has(memberId));
+    await tx.projectMember.createMany({
+      data: fresh.map((userId) => ({ projectId: id, userId })),
+      skipDuplicates: true,
+    });
+    await tx.projectMember.deleteMany({ where: { projectId: id, userId: { in: remove } } });
+    return fresh;
+  });
   await audit(actor, "project.members", id, { added: finalAdd, removed: remove });
+  // Only people who weren't on the project before hear about it.
+  await notifyAssigned(actor, project, newlyAdded);
 }
 
 /** Only a project with no logged work can be deleted. Otherwise mark it Completed. */
-export async function deleteProject(actor: Actor, id: Types.ObjectId) {
+export async function deleteProject(actor: Actor, id: string) {
   const project = await requireManageableProject(actor, id);
-  if (await Task.exists({ projectId: id })) {
+  if (await prisma.task.findFirst({ where: { projectId: id }, select: { id: true } })) {
     throw conflict("This project has logged work. Mark it as Completed instead.", "PROJECT_HAS_TASKS");
   }
-  await project.deleteOne();
+  await prisma.project.delete({ where: { id } });
   await audit(actor, "project.delete", id, { name: project.name, code: project.code });
 }
 
 /** Hours, contributors and recent tasks, counting only reports this viewer is allowed to see. */
-async function getProjectActivity(actor: Actor, project: { _id: Types.ObjectId }) {
-  const projectId = project._id;
-  const reportFilter = {
-    $and: [await visibleReportsFilter(actor), { "totals.byProject.projectId": projectId }],
-  };
-  const projectRows = [
-    { $match: reportFilter },
-    { $unwind: "$totals.byProject" },
-    { $match: { "totals.byProject.projectId": projectId } },
-  ];
+async function getProjectActivity(actor: Actor, projectId: string) {
+  const visible = await visibleReportsFilter(actor);
+  const taskWhere: Prisma.TaskWhereInput = { projectId, weeklyReport: visible };
 
-  const [byWeek, totals, reports] = await Promise.all([
-    WeeklyReport.aggregate<{ _id: Date; hours: number; isoWeek: number }>([
-      ...projectRows,
-      {
-        $group: {
-          _id: "$weekStart",
-          hours: { $sum: "$totals.byProject.hours" },
-          isoWeek: { $first: "$isoWeek" },
-        },
-      },
-      { $sort: { _id: -1 } },
-      { $limit: WEEKS_IN_CHART },
-    ]),
-    WeeklyReport.aggregate<{ hours: number; contributors: Types.ObjectId[] }>([
-      ...projectRows,
-      {
-        $group: {
-          _id: null,
-          hours: { $sum: "$totals.byProject.hours" },
-          contributors: { $addToSet: "$userId" },
-        },
-      },
-    ]),
-    WeeklyReport.find(reportFilter).select("_id").lean(),
+  const [rows, recent, blockedCount] = await Promise.all([
+    prisma.reportProjectTotal.findMany({
+      where: { projectId, report: visible },
+      select: { hours: true, report: { select: { weekStart: true, isoWeek: true, userId: true } } },
+    }),
+    prisma.task.findMany({
+      where: taskWhere,
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      take: RECENT_TASKS,
+      include: { user: { select: { name: true, avatarColor: true } } },
+    }),
+    prisma.task.count({ where: { ...taskWhere, status: "Blocked" } }),
   ]);
 
-  const taskFilter = { projectId, weeklyReportId: { $in: reports.map((report) => report._id) } };
-  const [recent, blockedCount] = await Promise.all([
-    Task.find(taskFilter)
-      .sort({ date: -1, createdAt: -1 })
-      .limit(RECENT_TASKS)
-      .populate<{ userId: { name: string; avatarColor: string } }>("userId", "name avatarColor")
-      .lean(),
-    Task.countDocuments({ ...taskFilter, status: "Blocked" }),
-  ]);
+  const weeks = new Map<string, { isoWeek: number; hours: number }>();
+  const contributors = new Set<string>();
+  let totalHours = 0;
+  for (const row of rows) {
+    const key = fromDay(row.report.weekStart)!;
+    const week = weeks.get(key) ?? { isoWeek: row.report.isoWeek, hours: 0 };
+    week.hours += row.hours;
+    weeks.set(key, week);
+    contributors.add(row.report.userId);
+    totalHours += row.hours;
+  }
+  const byWeek = [...weeks]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-WEEKS_IN_CHART)
+    .map(([, week]) => ({ label: `W${week.isoWeek}`, hours: week.hours }));
 
   return {
-    totalHours: totals[0]?.hours ?? 0,
-    contributorCount: totals[0]?.contributors.length ?? 0,
+    totalHours,
+    contributorCount: contributors.size,
     blockedCount,
-    byWeek: byWeek.reverse().map((week) => ({ label: `W${week.isoWeek}`, hours: week.hours })),
+    byWeek,
     recentTasks: recent.map((task) => ({
-      id: String(task._id),
+      id: task.id,
       date: fromDay(task.date),
       details: task.details,
       hours: task.hours,
-      status: task.status,
-      user: { name: task.userId.name, avatarColor: task.userId.avatarColor },
+      status: task.status as TaskStatus,
+      user: { name: task.user.name, avatarColor: task.user.avatarColor as PaletteColor },
     })),
   };
 }
 
 /** Returns null when the actor can't see the project. */
-export async function getProjectDetail(actor: Actor, id: Types.ObjectId) {
-  const project = await Project.findOne({ _id: id, ...projectScope(actor) })
-    .populate<{ memberIds: PersonRef[]; departmentId: DepartmentRef }>(PROJECT_POPULATE)
-    .lean();
+export async function getProjectDetail(actor: Actor, id: string) {
+  const project = await prisma.project.findFirst({
+    where: { id, ...projectScope(actor) },
+    include: PROJECT_INCLUDE,
+  });
   if (!project) return null;
-  return { ...serialise(project), activity: await getProjectActivity(actor, project) };
+  return { ...serialise(project), activity: await getProjectActivity(actor, project.id) };
 }
 
 export type ProjectSummary = ReturnType<typeof serialise>;

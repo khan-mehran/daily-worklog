@@ -1,5 +1,6 @@
-// A self-hosted alternative to vercel.json: calls the reminders endpoint every hour.
-// Run beside the app with `npx tsx scripts/cron.ts`. The endpoint never sends a reminder twice.
+// A self-hosted alternative to vercel.json: calls the reminders endpoint now, then on every hour,
+// so the Thursday 6 PM auto-submit happens at 6 PM. Run beside the app with `npx tsx scripts/cron.ts`.
+// The endpoint never sends a reminder or submits a report twice.
 import { config } from "dotenv";
 
 config({ path: ".env.local" });
@@ -18,4 +19,8 @@ async function run() {
 }
 
 void run();
-setInterval(run, HOUR);
+// Wait for the top of the next hour, then keep to it.
+setTimeout(() => {
+  void run();
+  setInterval(run, HOUR);
+}, HOUR - (Date.now() % HOUR));

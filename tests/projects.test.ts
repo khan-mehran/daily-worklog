@@ -1,11 +1,10 @@
-import { Types } from "mongoose";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as projectsRoute from "@/app/api/projects/route";
 import * as projectRoute from "@/app/api/projects/[id]/route";
 import * as membersRoute from "@/app/api/projects/[id]/members/route";
 import { DEPARTMENT_FILTER_COOKIE, type ReportStatus } from "@/lib/constants";
-import { AuditLog, Department, Project, Task, User, WeeklyReport } from "@/models";
-import { call, makeCompany, makeUser, request, resetDatabase, signInAs } from "./helpers";
+import { prisma } from "@/lib/db/prisma";
+import { call, makeCompany, makeUser, memberIdsOf, reportTotals, request, resetDatabase, setMembers, signInAs } from "./helpers";
 
 type Company = Awaited<ReturnType<typeof makeCompany>>;
 
@@ -39,49 +38,49 @@ const detail = (id: unknown) =>
 
 describe("who sees which projects", () => {
   it("gives a developer only the projects they're assigned to", async () => {
-    const hidden = await Project.create({
-      departmentId: company.it.department._id,
+    const hidden = await prisma.project.create({ data: {
+      departmentId: company.it.department.id,
       name: "Hidden",
       code: "HIDDEN",
       color: "teal",
-      ownerId: company.it.manager._id,
-      memberIds: [company.it.otherDeveloper._id],
-      createdBy: company.it.manager._id,
-    });
+      ownerId: company.it.manager.id,
+      members: { create: [{ userId: company.it.otherDeveloper.id }] },
+      createdBy: company.it.manager.id,
+    } });
     signInAs(company.it.developer);
-    expect(await listedIds()).toEqual([String(company.it.project._id)]);
-    expect((await detail(hidden._id)).status).toBe(404);
+    expect(await listedIds()).toEqual([company.it.project.id]);
+    expect((await detail(hidden.id)).status).toBe(404);
     expect(await listedIds("?search=Hidden")).toEqual([]);
   });
 
   it("gives a developer on no projects an empty list", async () => {
     signInAs(company.it.otherDeveloper);
     expect(await listedIds()).toEqual([]);
-    expect((await detail(company.it.project._id)).status).toBe(404);
+    expect((await detail(company.it.project.id)).status).toBe(404);
   });
 
   it.each(["manager", "lead"] as const)(
     "shows a %s every project in their department, assigned or not",
     async (key) => {
-      await Project.updateOne({ _id: company.it.project._id }, { memberIds: [] });
+      await setMembers(company.it.project.id, []);
       signInAs(company.it[key]);
-      expect(await listedIds()).toEqual([String(company.it.project._id)]);
+      expect(await listedIds()).toEqual([company.it.project.id]);
     },
   );
 
   it("shows the CEO all departments, narrowed by the switcher or a filter", async () => {
     signInAs(company.ceo);
     expect(await listedIds()).toHaveLength(2);
-    const hr = String(company.hr.department._id);
-    expect(await listedIds(`?departmentId=${hr}`)).toEqual([String(company.hr.project._id)]);
+    const hr = company.hr.department.id;
+    expect(await listedIds(`?departmentId=${hr}`)).toEqual([company.hr.project.id]);
     const switched = await list("", `${DEPARTMENT_FILTER_COOKIE}=${hr}`);
     expect(switched.body.data.map((row: { id: string }) => row.id)).toEqual([
-      String(company.hr.project._id),
+      company.hr.project.id,
     ]);
   });
 
   it("gives an unassigned manager nothing", async () => {
-    const free = await makeUser("MANAGER", null, company.ceo._id);
+    const free = await makeUser("MANAGER", null, company.ceo.id);
     signInAs(free);
     expect(await listedIds()).toEqual([]);
     expect((await create(newProject())).status).toBe(403);
@@ -110,20 +109,20 @@ describe("creating", () => {
     signInAs(company.it[key]);
     const { status, body } = await create(newProject({ startDate: "2026-11-02", endDate: "" }));
     expect(status).toBe(201);
-    const project = await Project.findById(body.data.id).lean();
-    expect(String(project?.departmentId)).toBe(String(company.it.department._id));
+    const project = await prisma.project.findUnique({ where: { id: body.data.id } });
+    expect(String(project?.departmentId)).toBe(company.it.department.id);
     expect(project?.code).toBe("NEW1");
-    expect(String(project?.ownerId)).toBe(String(company.it[key]._id));
+    expect(String(project?.ownerId)).toBe(company.it[key].id);
     expect(project?.startDate?.toISOString()).toBe("2026-11-02T00:00:00.000Z");
     expect(project?.endDate).toBeNull();
-    expect(await AuditLog.countDocuments({ action: "project.create" })).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "project.create" } })).toBe(1);
   });
 
   it("ignores a departmentId sent by the client", async () => {
     signInAs(company.it.manager);
-    const { body } = await create(newProject({ departmentId: String(company.hr.department._id) }));
-    const project = await Project.findById(body.data.id).lean();
-    expect(String(project?.departmentId)).toBe(String(company.it.department._id));
+    const { body } = await create(newProject({ departmentId: company.hr.department.id }));
+    const project = await prisma.project.findUnique({ where: { id: body.data.id } });
+    expect(String(project?.departmentId)).toBe(company.it.department.id);
   });
 
   it.each(["developer"] as const)("forbids a %s", async (key) => {
@@ -134,32 +133,32 @@ describe("creating", () => {
   it("keeps the CEO read-only", async () => {
     signInAs(company.ceo);
     expect((await create(newProject())).status).toBe(403);
-    expect((await patch(company.it.project._id, { name: "Changed" })).status).toBe(403);
-    expect((await remove(company.it.project._id)).status).toBe(403);
+    expect((await patch(company.it.project.id, { name: "Changed" })).status).toBe(403);
+    expect((await remove(company.it.project.id)).status).toBe(403);
     expect(
-      (await members(company.it.project._id, { remove: [String(company.it.developer._id)] })).status,
+      (await members(company.it.project.id, { remove: [company.it.developer.id] })).status,
     ).toBe(403);
   });
 
   it("assigns members from the department and refuses anyone else", async () => {
     signInAs(company.it.manager);
-    const good = await create(newProject({ memberIds: [String(company.it.developer._id)] }));
+    const good = await create(newProject({ memberIds: [company.it.developer.id] }));
     expect(good.status).toBe(201);
 
     const other = await create(
-      newProject({ code: "NEW2", memberIds: [String(company.hr.developer._id)] }),
+      newProject({ code: "NEW2", memberIds: [company.hr.developer.id] }),
     );
     expect(other.status).toBe(400);
-    const ceo = await create(newProject({ code: "NEW3", memberIds: [String(company.ceo._id)] }));
+    const ceo = await create(newProject({ code: "NEW3", memberIds: [company.ceo.id] }));
     expect(ceo.status).toBe(400);
-    expect(await Project.exists({ code: { $in: ["NEW2", "NEW3"] } })).toBeNull();
+    expect(await prisma.project.findFirst({ where: { code: { in: ["NEW2", "NEW3"] } } })).toBeNull();
   });
 
   it("refuses a deactivated member", async () => {
-    await User.updateOne({ _id: company.it.otherDeveloper._id }, { isActive: false });
+    await prisma.user.updateMany({ where: { id: company.it.otherDeveloper.id }, data: { isActive: false } });
     signInAs(company.it.manager);
     const { status } = await create(
-      newProject({ memberIds: [String(company.it.otherDeveloper._id)] }),
+      newProject({ memberIds: [company.it.otherDeveloper.id] }),
     );
     expect(status).toBe(400);
   });
@@ -188,7 +187,7 @@ describe("creating", () => {
   });
 
   it("won't create projects in an archived department", async () => {
-    await Department.updateOne({ _id: company.it.department._id }, { status: "Archived" });
+    await prisma.department.updateMany({ where: { id: company.it.department.id }, data: { status: "Archived" } });
     signInAs(company.it.manager);
     expect((await create(newProject())).status).toBe(409);
   });
@@ -196,58 +195,55 @@ describe("creating", () => {
 
 describe("updating and deleting", () => {
   it("changes only what's sent", async () => {
-    await Project.updateOne(
-      { _id: company.it.project._id },
-      { startDate: new Date("2026-01-01"), endDate: new Date("2026-12-31") },
-    );
+    await prisma.project.updateMany({ where: { id: company.it.project.id }, data: { startDate: new Date("2026-01-01"), endDate: new Date("2026-12-31") } });
     signInAs(company.it.lead);
-    expect((await patch(company.it.project._id, { status: "Completed" })).status).toBe(200);
-    const project = await Project.findById(company.it.project._id).lean();
+    expect((await patch(company.it.project.id, { status: "Completed" })).status).toBe(200);
+    const project = await prisma.project.findUnique({ where: { id: company.it.project.id } });
     expect(project?.status).toBe("Completed");
     expect(project?.startDate?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
     expect(project?.endDate?.toISOString()).toBe("2026-12-31T00:00:00.000Z");
   });
 
   it("clears a date when asked", async () => {
-    await Project.updateOne({ _id: company.it.project._id }, { endDate: new Date("2026-12-31") });
+    await prisma.project.updateMany({ where: { id: company.it.project.id }, data: { endDate: new Date("2026-12-31") } });
     signInAs(company.it.lead);
-    await patch(company.it.project._id, { endDate: null });
-    expect((await Project.findById(company.it.project._id).lean())?.endDate).toBeNull();
+    await patch(company.it.project.id, { endDate: null });
+    expect((await prisma.project.findUnique({ where: { id: company.it.project.id } }))?.endDate).toBeNull();
   });
 
   it("checks a single new date against the stored one", async () => {
-    await Project.updateOne({ _id: company.it.project._id }, { startDate: new Date("2026-06-01") });
+    await prisma.project.updateMany({ where: { id: company.it.project.id }, data: { startDate: new Date("2026-06-01") } });
     signInAs(company.it.lead);
-    expect((await patch(company.it.project._id, { endDate: "2026-01-01" })).status).toBe(400);
+    expect((await patch(company.it.project.id, { endDate: "2026-01-01" })).status).toBe(400);
   });
 
   it("can't be moved to another department", async () => {
     signInAs(company.it.manager);
-    await patch(company.it.project._id, {
+    await patch(company.it.project.id, {
       name: "Still IT",
-      departmentId: String(company.hr.department._id),
+      departmentId: company.hr.department.id,
     });
-    const project = await Project.findById(company.it.project._id).lean();
-    expect(String(project?.departmentId)).toBe(String(company.it.department._id));
+    const project = await prisma.project.findUnique({ where: { id: company.it.project.id } });
+    expect(String(project?.departmentId)).toBe(company.it.department.id);
   });
 
   it("forbids an assigned developer from changing their project", async () => {
     signInAs(company.it.developer);
-    expect((await patch(company.it.project._id, { name: "Mine" })).status).toBe(403);
-    expect((await remove(company.it.project._id)).status).toBe(403);
+    expect((await patch(company.it.project.id, { name: "Mine" })).status).toBe(403);
+    expect((await remove(company.it.project.id)).status).toBe(403);
     expect(
-      (await members(company.it.project._id, { add: [String(company.it.otherDeveloper._id)] })).status,
+      (await members(company.it.project.id, { add: [company.it.otherDeveloper.id] })).status,
     ).toBe(403);
   });
 
   it("hides a project from an unassigned developer's writes with a 404", async () => {
     signInAs(company.it.otherDeveloper);
-    expect((await patch(company.it.project._id, { name: "Mine" })).status).toBe(404);
+    expect((await patch(company.it.project.id, { name: "Mine" })).status).toBe(404);
   });
 
   it("refuses to delete a project with logged work", async () => {
     signInAs(company.it.manager);
-    const { status, body } = await remove(company.it.project._id);
+    const { status, body } = await remove(company.it.project.id);
     expect(status).toBe(409);
     expect(body.error.code).toBe("PROJECT_HAS_TASKS");
   });
@@ -256,40 +252,39 @@ describe("updating and deleting", () => {
     signInAs(company.it.manager);
     const created = await create(newProject());
     expect((await remove(created.body.data.id)).status).toBe(200);
-    expect(await Project.exists({ _id: created.body.data.id })).toBeNull();
+    expect(await prisma.project.findFirst({ where: { id: created.body.data.id } })).toBeNull();
   });
 });
 
 describe("members", () => {
-  const id = () => company.it.project._id;
-  const memberIds = async () =>
-    (await Project.findById(id()).lean())?.memberIds.map(String) ?? [];
+  const id = () => company.it.project.id;
+  const memberIds = () => memberIdsOf(id());
 
   beforeEach(() => signInAs(company.it.lead));
 
   it("adds and removes in one request, and keeps others", async () => {
     const { otherDeveloper, developer, lead } = company.it;
     const { status } = await members(id(), {
-      add: [String(otherDeveloper._id)],
-      remove: [String(developer._id)],
+      add: [otherDeveloper.id],
+      remove: [developer.id],
     });
     expect(status).toBe(200);
     expect((await memberIds()).sort()).toEqual(
-      [String(otherDeveloper._id), String(lead._id)].sort(),
+      [otherDeveloper.id, lead.id].sort(),
     );
   });
 
   it("doesn't add someone twice", async () => {
-    await members(id(), { add: [String(company.it.developer._id)] });
+    await members(id(), { add: [company.it.developer.id] });
     const ids = await memberIds();
-    expect(ids.filter((value) => value === String(company.it.developer._id))).toHaveLength(1);
+    expect(ids.filter((value) => value === company.it.developer.id)).toHaveLength(1);
   });
 
   it("refuses people from another department and changes nothing", async () => {
     const before = await memberIds();
     const { status } = await members(id(), {
-      add: [String(company.hr.developer._id)],
-      remove: [String(company.it.developer._id)],
+      add: [company.hr.developer.id],
+      remove: [company.it.developer.id],
     });
     expect(status).toBe(400);
     expect(await memberIds()).toEqual(before);
@@ -300,7 +295,7 @@ describe("members", () => {
   });
 
   it("takes effect for the developer at once", async () => {
-    await members(id(), { remove: [String(company.it.developer._id)] });
+    await members(id(), { remove: [company.it.developer.id] });
     signInAs(company.it.developer);
     expect((await detail(id())).status).toBe(404);
   });
@@ -308,42 +303,37 @@ describe("members", () => {
 
 describe("project activity follows the approval gate", () => {
   /** One logged task by `owner` on the IT project, in a report at `status`. */
-  async function logWork(owner: { _id: Types.ObjectId }, status: ReportStatus, isoWeek: number, hours: number) {
+  async function logWork(owner: { id: string }, status: ReportStatus, isoWeek: number, hours: number) {
     const { department, project } = company.it;
-    const report = await WeeklyReport.create({
-      userId: owner._id,
-      departmentId: department._id,
+    const report = await prisma.weeklyReport.create({ data: {
+      userId: owner.id,
+      departmentId: department.id,
       isoYear: 2026,
       isoWeek,
       weekStart: new Date(Date.UTC(2026, 0, isoWeek * 7)),
       weekEnd: new Date(Date.UTC(2026, 0, isoWeek * 7 + 6)),
       status,
-      totals: {
-        hours,
-        taskCount: 1,
-        completedCount: 0,
-        blockedCount: 1,
-        byProject: [{ projectId: project._id, hours, taskCount: 1 }],
-      },
-    });
-    await Project.updateOne({ _id: project._id }, { $addToSet: { memberIds: owner._id } });
-    const details = `${status} work by ${owner._id}`;
-    await Task.create({
-      userId: owner._id,
-      departmentId: department._id,
-      projectId: project._id,
+      ...reportTotals(project.id, hours, { completedCount: 0, blockedCount: 1 }),
+    } });
+    await prisma.projectMember.createMany({ data: [{ projectId: project.id, userId: owner.id }], skipDuplicates: true });
+    const details = `${status} work by ${owner.id}`;
+    await prisma.task.create({ data: {
+      userId: owner.id,
+      departmentId: department.id,
+      projectId: project.id,
       date: report.weekStart,
       details,
       hours,
       status: "Blocked",
-      weeklyReportId: report._id,
-    });
+      weeklyReportId: report.id,
+      reportStatus: status,
+    } });
     return details;
   }
 
-  async function seenBy(user: { _id: Types.ObjectId }) {
+  async function seenBy(user: { id: string }) {
     signInAs(user);
-    const { body } = await detail(company.it.project._id);
+    const { body } = await detail(company.it.project.id);
     return body.data.activity as {
       totalHours: number;
       blockedCount: number;
@@ -414,7 +404,7 @@ describe("project activity follows the approval gate", () => {
 
   it("returns no sensitive member fields", async () => {
     signInAs(company.it.developer);
-    const { body } = await detail(company.it.project._id);
+    const { body } = await detail(company.it.project.id);
     expect(body.data.members[0]).not.toHaveProperty("email");
     expect(JSON.stringify(body)).not.toMatch(/passwordHash|inviteToken/);
   });

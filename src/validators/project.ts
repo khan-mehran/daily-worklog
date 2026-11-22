@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "@/lib/constants";
-import { daySchema, objectIdSchema, paginationSchema, paletteColorSchema } from "./common";
+import { daySchema, idSchema, paginationSchema, paletteColorSchema } from "./common";
 
 const name = z.string({ error: "Enter a project name" }).trim().min(2, "Enter a project name").max(80);
 const code = z
@@ -43,7 +43,7 @@ export const createProjectSchema = z
     status: status.default("Active"),
     startDate: optionalDay.optional(),
     endDate: optionalDay.optional(),
-    memberIds: z.array(objectIdSchema).max(200).default([]),
+    memberIds: z.array(idSchema).max(200).default([]),
   })
   .superRefine(endsAfterStart);
 export type CreateProjectInput = z.output<typeof createProjectSchema>;
@@ -57,8 +57,8 @@ export type UpdateProjectInput = z.output<typeof updateProjectSchema>;
 
 export const updateMembersSchema = z
   .object({
-    add: z.array(objectIdSchema).max(200).default([]),
-    remove: z.array(objectIdSchema).max(200).default([]),
+    add: z.array(idSchema).max(200).default([]),
+    remove: z.array(idSchema).max(200).default([]),
   })
   .refine((value) => value.add.length + value.remove.length > 0, "Nothing to update");
 export type UpdateMembersInput = z.output<typeof updateMembersSchema>;
@@ -66,6 +66,6 @@ export type UpdateMembersInput = z.output<typeof updateMembersSchema>;
 export const listProjectsQuerySchema = paginationSchema.extend({
   search: z.string().trim().max(80).optional(),
   status: status.optional(),
-  departmentId: objectIdSchema.optional(),
+  departmentId: idSchema.optional(),
 });
 export type ListProjectsQuery = z.output<typeof listProjectsQuerySchema>;

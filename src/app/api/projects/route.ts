@@ -14,5 +14,5 @@ export const GET = authedRoute(async ({ req, user, selectedDepartmentId }) => {
 
 export const POST = authedRoute(async ({ req, user }) => {
   const project = await createProject(user, await parseBody(req, createProjectSchema));
-  return NextResponse.json({ data: { id: String(project._id) } }, { status: 201 });
+  return NextResponse.json({ data: { id: project.id } }, { status: 201 });
 });

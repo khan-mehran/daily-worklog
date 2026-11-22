@@ -7,8 +7,8 @@ import "./globals.css";
 const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], variable: "--font-jakarta" });
 
 export const metadata: Metadata = {
-  title: { default: "WorkLog", template: "%s · WorkLog" },
-  description: "Role-based work reporting and approvals.",
+  title: { default: "GET List · Gord Employee Task List", template: "%s · GET List" },
+  description: "GET List (Gord Employee Task List): role-based work reporting and approvals.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -24,9 +24,11 @@ import type { ProjectDetail } from "@/lib/projects/service";
 import { cn, formatDay } from "@/lib/utils";
 import { ProjectStatusBadge } from "./project-badges";
 import { ManageMembersDialog, ProjectDialog, PROJECTS_KEY } from "./project-dialogs";
+import { seesAllDepartments } from "@/lib/constants";
 
 /** Hours on this page depend on the viewer, so each role is told what the numbers cover. */
 const ACTIVITY_SCOPE: Record<Role, string> = {
+  SUPER_ADMIN: "Only fully approved reports count.",
   CEO: "Only fully approved reports count.",
   MANAGER: "Your own work, your team leads' submitted reports and reports your team leads approved.",
   TEAM_LEAD: "Your own work and your direct reports' submitted reports.",
@@ -106,7 +108,7 @@ export function ProjectDetailView({
           {project.code}
         </Badge>
         <ProjectStatusBadge status={project.status} />
-        {role === "CEO" ? (
+        {seesAllDepartments(role) ? (
           <Badge>
             <ColorDot color={project.department.color} />
             {project.department.name}

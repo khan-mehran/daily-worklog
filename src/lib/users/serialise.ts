@@ -1,42 +1,34 @@
-import type { PopulateOptions, Types } from "mongoose";
-import type { IUser } from "@/models";
+import type { Prisma } from "@prisma/client";
+import type { PaletteColor } from "@/lib/constants";
 
-export const USER_POPULATE: PopulateOptions[] = [
-  { path: "departmentId", select: "name code color" },
-  { path: "reportsTo", select: "name role" },
-];
+export const USER_INCLUDE = {
+  department: { select: { id: true, name: true, code: true, color: true } },
+  approver: { select: { id: true, name: true, role: true } },
+} satisfies Prisma.UserInclude;
 
-type PopulatedUser = Pick<IUser, "name" | "email" | "role" | "avatarColor" | "isActive"> & {
-  _id: Types.ObjectId;
-  departmentId: unknown;
-  reportsTo: unknown;
-};
+type UserRecord = Prisma.UserGetPayload<{ include: typeof USER_INCLUDE }>;
 
-/** Lists only the fields the client needs, so a new schema field is never exposed by default. */
-export function serialiseUser(user: PopulatedUser) {
-  const department = user.departmentId as {
-    _id: Types.ObjectId;
-    name: string;
-    code: string;
-    color: string;
-  } | null;
-  const manager = user.reportsTo as { _id: Types.ObjectId; name: string; role: string } | null;
+/** Lists only the fields the client needs, so a new column is never exposed by default. */
+export function serialiseUser(user: UserRecord) {
   return {
-    id: String(user._id),
+    id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
-    avatarColor: user.avatarColor,
+    avatarColor: user.avatarColor as PaletteColor,
     isActive: user.isActive,
-    department: department
+    approval: user.approval,
+    department: user.department
       ? {
-          id: String(department._id),
-          name: department.name,
-          code: department.code,
-          color: department.color,
+          id: user.department.id,
+          name: user.department.name,
+          code: user.department.code,
+          color: user.department.color as PaletteColor,
         }
       : null,
-    reportsTo: manager ? { id: String(manager._id), name: manager.name, role: manager.role } : null,
+    reportsTo: user.approver
+      ? { id: user.approver.id, name: user.approver.name, role: user.approver.role }
+      : null,
   };
 }
 

@@ -1,11 +1,11 @@
-import { Types } from "mongoose";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { departmentCollectionScope, scopeFor, type Actor } from "@/lib/permissions";
+import { departmentTableScope, scopeFor, type Actor } from "@/lib/permissions";
 
-const IT = new Types.ObjectId().toString();
-const HR = new Types.ObjectId().toString();
+const IT = randomUUID();
+const HR = randomUUID();
 const actor = (role: Actor["role"], departmentId: string | null): Actor => ({
-  id: new Types.ObjectId().toString(),
+  id: randomUUID(),
   role,
   departmentId,
 });
@@ -37,20 +37,20 @@ describe("scopeFor", () => {
     },
   );
 
-  it("returns real ObjectIds, because aggregation pipelines do not cast strings", () => {
-    expect(scopeFor(actor("MANAGER", IT)).departmentId).toBeInstanceOf(Types.ObjectId);
-    expect(scopeFor(actor("CEO", null), HR).departmentId).toBeInstanceOf(Types.ObjectId);
+  it("returns the id itself, ready for a Prisma where clause", () => {
+    expect(scopeFor(actor("MANAGER", IT))).toEqual({ departmentId: IT });
+    expect(scopeFor(actor("CEO", null), HR)).toEqual({ departmentId: HR });
   });
 
   it("gives an unassigned manager nothing, rather than everything with a null department", () => {
-    expect(scopeFor(actor("MANAGER", null))).toEqual({ departmentId: { $in: [] } });
+    expect(scopeFor(actor("MANAGER", null))).toEqual({ departmentId: { in: [] } });
   });
 });
 
-describe("departmentCollectionScope", () => {
-  it("is open for the CEO and limited to their own _id for others", () => {
-    expect(departmentCollectionScope(actor("CEO", null))).toEqual({});
-    expect(String(departmentCollectionScope(actor("DEVELOPER", IT))._id)).toBe(IT);
-    expect(departmentCollectionScope(actor("MANAGER", null))).toEqual({ _id: { $in: [] } });
+describe("departmentTableScope", () => {
+  it("is open for the CEO and limited to their own id for others", () => {
+    expect(departmentTableScope(actor("CEO", null))).toEqual({});
+    expect(departmentTableScope(actor("DEVELOPER", IT))).toEqual({ id: IT });
+    expect(departmentTableScope(actor("MANAGER", null))).toEqual({ id: { in: [] } });
   });
 });

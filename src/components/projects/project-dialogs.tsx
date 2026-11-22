@@ -41,8 +41,11 @@ export function ProjectDialog({
   open,
   onOpenChange,
   onCreated,
+  departmentId,
 }: {
   project?: ProjectSummary;
+  /** For a new project: the department it will belong to, whose people can be assigned. */
+  departmentId?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (id: string) => void;
@@ -158,7 +161,7 @@ export function ProjectDialog({
             render={({ field }) => <ColorPicker value={field.value} onChange={field.onChange} />}
           />
         </div>
-        {project ? null : <MemberPicker selected={members} onChange={setMembers} />}
+        {project ? null : <MemberPicker selected={members} onChange={setMembers} departmentId={departmentId} />}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
@@ -220,7 +223,7 @@ export function ManageMembersDialog({
       description="Developers can only see and log time on projects they're assigned to."
     >
       <div className="space-y-4">
-        <MemberPicker selected={selected} onChange={setSelected} />
+        <MemberPicker selected={selected} onChange={setSelected} departmentId={project.department.id} />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel

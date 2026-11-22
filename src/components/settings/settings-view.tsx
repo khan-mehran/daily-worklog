@@ -16,7 +16,7 @@ import { VsCodeSyncSection } from "./vscode-sync-section";
 import { api } from "@/lib/api-client";
 import { ROLE_LABELS, type Role, type ThemePreference } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import { changePasswordSchema, updateProfileSchema } from "@/validators/user";
+import { updateProfileSchema } from "@/validators/user";
 
 interface SettingsUser {
   name: string;
@@ -26,14 +26,22 @@ interface SettingsUser {
   preferences: { theme: ThemePreference; emailNotifications: boolean; inAppNotifications: boolean };
 }
 
-function Section({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
   return (
     <Card className="grid gap-4 p-6 md:grid-cols-[16rem_1fr]">
       <div>
         <h2 className="font-semibold">{title}</h2>
         <p className="text-muted mt-1 text-sm">{description}</p>
       </div>
-      <div className="max-w-md">{children}</div>
+      <div className="min-w-0">{children}</div>
     </Card>
   );
 }
@@ -88,10 +96,6 @@ export function SettingsView({ user }: { user: SettingsUser }) {
     resolver: zodResolver(updateProfileSchema),
     defaultValues: { name: user.name },
   });
-  const password = useForm<z.input<typeof changePasswordSchema>>({
-    resolver: zodResolver(changePasswordSchema),
-    defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
-  });
 
   const savePreference = useMutation({
     mutationFn: (patch: Partial<SettingsUser["preferences"]>) =>
@@ -106,9 +110,12 @@ export function SettingsView({ user }: { user: SettingsUser }) {
 
   return (
     <>
-      <PageHeader title="Settings" description="Your profile, password and how WorkLog contacts you." />
+      <PageHeader title="Settings" description="Your profile and how GET List contacts you." />
       <div className="space-y-4">
-        <Section title="Profile" description={`${ROLE_LABELS[user.role]}${user.department ? ` · ${user.department}` : ""}`}>
+        <Section
+          title="Profile"
+          description={`${ROLE_LABELS[user.role]}${user.department ? ` · ${user.department}` : ""}`}
+        >
           <form
             className="space-y-4"
             noValidate
@@ -122,48 +129,32 @@ export function SettingsView({ user }: { user: SettingsUser }) {
               }
             })}
           >
-            <Field label="Full name" htmlFor="profile-name" error={profile.formState.errors.name?.message}>
-              <Input id="profile-name" {...profile.register("name")} />
-            </Field>
-            <Field label="Email" htmlFor="profile-email" hint="Ask the CEO to change your email.">
-              <Input id="profile-email" value={user.email} disabled readOnly />
-            </Field>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Field
+                label="Full name"
+                htmlFor="profile-name"
+                error={profile.formState.errors.name?.message}
+              >
+                <Input id="profile-name" {...profile.register("name")} />
+              </Field>
+              <Field
+                label="Email"
+                htmlFor="profile-email"
+                hint="This is the Microsoft account you sign in with."
+              >
+                <Input id="profile-email" value={user.email} disabled readOnly />
+              </Field>
+            </div>
             <Button type="submit" disabled={profile.formState.isSubmitting}>
               Save profile
             </Button>
           </form>
         </Section>
 
-        <Section title="Password" description="At least 10 characters.">
-          <form
-            className="space-y-4"
-            noValidate
-            onSubmit={password.handleSubmit(async (values) => {
-              try {
-                await api("/api/me/password", { method: "POST", body: values });
-                toast.success("Password changed.");
-                password.reset();
-              } catch (error) {
-                toast.error((error as Error).message);
-              }
-            })}
-          >
-            <Field label="Current password" htmlFor="pw-current" error={password.formState.errors.currentPassword?.message}>
-              <Input id="pw-current" type="password" autoComplete="current-password" {...password.register("currentPassword")} />
-            </Field>
-            <Field label="New password" htmlFor="pw-new" error={password.formState.errors.newPassword?.message}>
-              <Input id="pw-new" type="password" autoComplete="new-password" {...password.register("newPassword")} />
-            </Field>
-            <Field label="Confirm new password" htmlFor="pw-confirm" error={password.formState.errors.confirmPassword?.message}>
-              <Input id="pw-confirm" type="password" autoComplete="new-password" {...password.register("confirmPassword")} />
-            </Field>
-            <Button type="submit" disabled={password.formState.isSubmitting}>
-              Change password
-            </Button>
-          </form>
-        </Section>
-
-        <Section title="Appearance" description="Saved to your account, so it follows you between devices.">
+        <Section
+          title="Appearance"
+          description="Saved to your account, so it follows you between devices."
+        >
           <div role="radiogroup" aria-label="Theme" className="grid grid-cols-3 gap-2">
             {(
               [
@@ -180,7 +171,9 @@ export function SettingsView({ user }: { user: SettingsUser }) {
                 onClick={() => update({ theme: value })}
                 className={cn(
                   "flex flex-col items-center gap-1.5 rounded-lg border px-3 py-3 text-sm transition-colors duration-150",
-                  preferences.theme === value ? "border-primary bg-primary/10 font-semibold" : "hover:bg-subtle",
+                  preferences.theme === value
+                    ? "border-primary bg-primary/10 font-semibold"
+                    : "hover:bg-subtle",
                 )}
               >
                 <Icon className="size-5" aria-hidden />
@@ -197,19 +190,24 @@ export function SettingsView({ user }: { user: SettingsUser }) {
           <VsCodeSyncSection />
         </Section>
 
-        <Section title="Notifications" description="Reviews, approvals, requested changes and reminders.">
-          <Toggle
-            label="Email notifications"
-            description="Send me an email as well as the in-app notification."
-            checked={preferences.emailNotifications}
-            onChange={(emailNotifications) => update({ emailNotifications })}
-          />
-          <Toggle
-            label="In-app notifications"
-            description="Show notifications in the bell and as pop-ups."
-            checked={preferences.inAppNotifications}
-            onChange={(inAppNotifications) => update({ inAppNotifications })}
-          />
+        <Section
+          title="Notifications"
+          description="Reviews, approvals, requested changes and reminders."
+        >
+          <div className="grid gap-x-8 lg:grid-cols-2">
+            <Toggle
+              label="Email notifications"
+              description="Send me an email as well as the in-app notification."
+              checked={preferences.emailNotifications}
+              onChange={(emailNotifications) => update({ emailNotifications })}
+            />
+            <Toggle
+              label="In-app notifications"
+              description="Show notifications in the bell and as pop-ups."
+              checked={preferences.inAppNotifications}
+              onChange={(inAppNotifications) => update({ inAppNotifications })}
+            />
+          </div>
         </Section>
       </div>
     </>

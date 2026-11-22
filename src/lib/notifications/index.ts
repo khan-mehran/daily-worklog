@@ -1,23 +1,32 @@
-import type { Types } from "mongoose";
+import type { NotificationType } from "@prisma/client";
+import { isUniqueViolation, prisma } from "@/lib/db/prisma";
 import { sendEmailSafely } from "@/lib/email";
 import { notificationEmail } from "@/lib/email/templates";
-import { Notification, User, type NotificationType } from "@/models";
+
+export type { NotificationType };
 
 interface NotificationInput {
-  recipientId: Types.ObjectId | string;
-  departmentId: Types.ObjectId | string | null;
+  recipientId: string;
+  departmentId: string | null;
   type: NotificationType;
   title: string;
   message: string;
   link?: string;
-  reportId?: Types.ObjectId;
+  reportId?: string;
   /** A reminder with the same key is never sent to the same person twice. */
   dedupeKey?: string;
 }
 
 export async function createNotification(input: NotificationInput) {
-  await Notification.create(input);
+  await prisma.notification.create({ data: input });
 }
+
+/**
+ * The CEO (the chairman) follows everything in the app and is never emailed, whatever their
+ * preferences say. Everyone else gets email unless they've turned it off.
+ */
+export const receivesEmail = (person: { role: string; emailNotifications: boolean }) =>
+  person.role !== "CEO" && person.emailNotifications;
 
 /**
  * Notifies one person in the app and, if `email` is set, by email, following their preferences.
@@ -25,21 +34,29 @@ export async function createNotification(input: NotificationInput) {
  */
 export async function notify(input: NotificationInput & { email?: boolean }) {
   const { email, ...notification } = input;
-  const recipient = await User.findById(input.recipientId)
-    .select("name email isActive preferences")
-    .lean();
+  const recipient = await prisma.user.findUnique({
+    where: { id: input.recipientId },
+    select: {
+      name: true,
+      email: true,
+      role: true,
+      isActive: true,
+      emailNotifications: true,
+      inAppNotifications: true,
+    },
+  });
   if (!recipient?.isActive) return false;
 
   // A deduplicated reminder is always stored, because the stored row is what prevents a repeat.
-  if (recipient.preferences.inAppNotifications || input.dedupeKey) {
+  if (recipient.inAppNotifications || input.dedupeKey) {
     try {
-      await Notification.create(notification);
+      await prisma.notification.create({ data: notification });
     } catch (error) {
-      if ((error as { code?: number }).code === 11000) return false;
+      if (isUniqueViolation(error)) return false;
       throw error;
     }
   }
-  if (email && recipient.preferences.emailNotifications) {
+  if (email && receivesEmail(recipient)) {
     await sendEmailSafely(
       notificationEmail({
         to: recipient.email,
@@ -54,4 +71,4 @@ export async function notify(input: NotificationInput & { email?: boolean }) {
 }
 
 export const countUnreadNotifications = (recipientId: string) =>
-  Notification.countDocuments({ recipientId, readAt: null });
+  prisma.notification.count({ where: { recipientId, readAt: null } });

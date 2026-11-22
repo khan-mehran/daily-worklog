@@ -37,7 +37,3 @@ export function formatWeekRange(weekStart: string, weekEnd: string) {
 
 export const formatHours = (hours: number) =>
   `${Number.isInteger(hours) ? hours : hours.toFixed(2).replace(/0$/, "")}h`;
-
-export function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}

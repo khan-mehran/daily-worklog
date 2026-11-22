@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ReportStatusBadge } from "@/components/reports/report-status-badge";
-import { TaskStatusBadge } from "@/components/reports/report-parts";
+import { TaskDetails, TaskStatusBadge } from "@/components/reports/report-parts";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/form";
@@ -187,7 +187,9 @@ export function DailyTab({
                         </Badge>
                       ) : null}
                     </td>
-                    <td className="px-4 py-3 whitespace-pre-line">{task.details}</td>
+                    <td className="px-4 py-3">
+                      <TaskDetails text={task.details} />
+                    </td>
                     <td className="px-4 py-3">
                       <TaskStatusBadge status={task.status} />
                     </td>

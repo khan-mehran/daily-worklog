@@ -19,22 +19,26 @@ export interface PickerPerson {
 
 /**
  * Multi-select with server-side search. The API only returns the caller's own department, so
- * people from other departments can't be offered here.
+ * people from other departments can't be offered here. A Super Admin sees every department, so
+ * `departmentId` narrows the list to the project's own.
  */
 export function MemberPicker({
   selected,
   onChange,
+  departmentId,
 }: {
+  departmentId?: string | null;
   selected: PickerPerson[];
   onChange: (people: PickerPerson[]) => void;
 }) {
   const [search, setSearch] = useState("");
   const debounced = useDebouncedValue(search);
-  const params = new URLSearchParams({ active: "true", limit: "50" });
+  const params = new URLSearchParams({ active: "true", approval: "APPROVED", limit: "50" });
+  if (departmentId) params.set("departmentId", departmentId);
   if (debounced) params.set("search", debounced);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["users", "member-picker", debounced],
+    queryKey: ["users", "member-picker", departmentId ?? null, debounced],
     queryFn: () => api<UserRow[]>(`/api/users?${params}`),
   });
 

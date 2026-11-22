@@ -7,7 +7,8 @@ export type NavIcon =
   | "team"
   | "reviews"
   | "departments"
-  | "admin"
+  | "users"
+  | "site"
   | "settings";
 
 export interface NavItem {
@@ -17,17 +18,20 @@ export interface NavItem {
   roles: readonly Role[];
 }
 
-const EVERYONE: readonly Role[] = ["CEO", "MANAGER", "TEAM_LEAD", "DEVELOPER"];
-const LEADS_AND_UP: readonly Role[] = ["CEO", "MANAGER", "TEAM_LEAD"];
+const EVERYONE: readonly Role[] = ["SUPER_ADMIN", "CEO", "MANAGER", "TEAM_LEAD", "DEVELOPER"];
+// The people in the approval chain. The Super Admin gives the IT department's final approval.
+const APPROVERS: readonly Role[] = ["SUPER_ADMIN", "CEO", "MANAGER", "TEAM_LEAD"];
+const ORG_WIDE: readonly Role[] = ["SUPER_ADMIN", "CEO"];
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: "dashboard", roles: EVERYONE },
   { href: "/tasks", label: "Tasks", icon: "tasks", roles: EVERYONE },
   { href: "/projects", label: "Projects", icon: "projects", roles: EVERYONE },
-  { href: "/team", label: "Team", icon: "team", roles: LEADS_AND_UP },
-  { href: "/reviews", label: "Reviews", icon: "reviews", roles: LEADS_AND_UP },
-  { href: "/departments", label: "Departments", icon: "departments", roles: ["CEO"] },
-  { href: "/admin", label: "Admin", icon: "admin", roles: ["CEO"] },
+  { href: "/team", label: "Team", icon: "team", roles: [...ORG_WIDE, "MANAGER", "TEAM_LEAD"] },
+  { href: "/reviews", label: "Reviews", icon: "reviews", roles: APPROVERS },
+  { href: "/departments", label: "Departments", icon: "departments", roles: ORG_WIDE },
+  { href: "/users", label: "Users", icon: "users", roles: ORG_WIDE },
+  { href: "/site-settings", label: "Site settings", icon: "site", roles: ["SUPER_ADMIN"] },
   { href: "/settings", label: "Settings", icon: "settings", roles: EVERYONE },
 ];
 

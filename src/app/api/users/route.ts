@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { forbidden } from "@/lib/api/errors";
 import { authedRoute, parseBody, parseQuery } from "@/lib/api/handler";
-import { canManageUsers, canViewPeople, isCEO, scopeFor } from "@/lib/permissions";
-import { serialiseUser, USER_POPULATE } from "@/lib/users/serialise";
+import { prisma } from "@/lib/db/prisma";
+import { canManageUsers, canViewPeople, isOrgWide, scopeFor } from "@/lib/permissions";
+import { serialiseUser, USER_INCLUDE } from "@/lib/users/serialise";
 import { createUser } from "@/lib/users/service";
-import { escapeRegex } from "@/lib/utils";
-import { User } from "@/models";
 import { createUserSchema, listUsersQuerySchema } from "@/validators/user";
 
 export const GET = authedRoute(async ({ req, user, selectedDepartmentId }) => {
@@ -13,33 +13,37 @@ export const GET = authedRoute(async ({ req, user, selectedDepartmentId }) => {
   const query = parseQuery(req, listUsersQuerySchema);
 
   // scopeFor ignores the requested department for everyone but the CEO.
-  const departmentFilter =
-    isCEO(user) && query.unassigned === "true"
-      ? { departmentId: null, role: "MANAGER" }
+  const departmentFilter: Prisma.UserWhereInput =
+    isOrgWide(user) && query.unassigned === "true"
+      ? { departmentId: null, role: "MANAGER", approval: "APPROVED" }
       : scopeFor(user, query.departmentId ?? selectedDepartmentId);
 
-  const filter = {
+  const where: Prisma.UserWhereInput = {
     ...(query.role ? { role: query.role } : {}),
     ...departmentFilter,
     ...(query.active ? { isActive: query.active === "true" } : {}),
+    // Only the people who manage users see who is waiting or was turned away.
+    ...(canManageUsers(user) ? (query.approval ? { approval: query.approval } : {}) : { approval: "APPROVED" as const }),
     ...(query.search
       ? {
-          $or: [
-            { name: { $regex: escapeRegex(query.search), $options: "i" } },
-            { email: { $regex: escapeRegex(query.search), $options: "i" } },
+          OR: [
+            { name: { contains: query.search, mode: "insensitive" } },
+            { email: { contains: query.search, mode: "insensitive" } },
           ],
         }
       : {}),
   };
 
   const [users, total] = await Promise.all([
-    User.find(filter)
-      .sort({ name: 1 })
-      .skip((query.page - 1) * query.limit)
-      .limit(query.limit)
-      .populate(USER_POPULATE)
-      .lean(),
-    User.countDocuments(filter),
+    prisma.user.findMany({
+      where,
+      // PENDING sorts first, so people waiting are at the top.
+      orderBy: [{ approval: "asc" }, { name: "asc" }],
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+      include: USER_INCLUDE,
+    }),
+    prisma.user.count({ where }),
   ]);
   return NextResponse.json({
     data: users.map(serialiseUser),
@@ -50,5 +54,5 @@ export const GET = authedRoute(async ({ req, user, selectedDepartmentId }) => {
 export const POST = authedRoute(async ({ req, user }) => {
   if (!canManageUsers(user)) throw forbidden();
   const created = await createUser(user, await parseBody(req, createUserSchema));
-  return NextResponse.json({ data: { id: String(created._id) } }, { status: 201 });
+  return NextResponse.json({ data: { id: created.id } }, { status: 201 });
 });

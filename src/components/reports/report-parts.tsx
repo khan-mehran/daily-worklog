@@ -30,6 +30,31 @@ export function TaskStatusBadge({ status }: { status: string }) {
   );
 }
 
+const BULLET = /^\s*([•·\-*–])\s+(.*)$/;
+
+/**
+ * A task's details, line by line as typed. A line that starts with a bullet hangs: when it
+ * wraps, the text stays lined up to the right of the bullet.
+ */
+export function TaskDetails({ text, className }: { text: string; className?: string }) {
+  return (
+    <div className={className}>
+      {text.split(/\r?\n/).map((line, index) => {
+        const bullet = BULLET.exec(line);
+        if (!bullet) return <p key={index}>{line || " "}</p>;
+        return (
+          <p key={index} className="flex gap-2">
+            <span aria-hidden className="shrink-0">
+              •
+            </span>
+            <span className="min-w-0">{bullet[2]}</span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 /** One task line. Blocked tasks get a red edge as well as their badge. */
 export function TaskRow({ task, actions }: { task: DayTask; actions?: ReactNode }) {
   return (
@@ -40,7 +65,7 @@ export function TaskRow({ task, actions }: { task: DayTask; actions?: ReactNode 
       )}
     >
       <div className="min-w-0 flex-1">
-        <p className="text-sm whitespace-pre-line">{task.details}</p>
+        <TaskDetails text={task.details} className="text-sm" />
         <p className="text-muted mt-1 flex flex-wrap items-center gap-x-2 text-xs">
           <span className="flex items-center gap-1.5">
             <ColorDot color={task.project.color} />

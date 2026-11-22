@@ -1,9 +1,9 @@
 import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
-import { Types } from "mongoose";
 import { cache } from "react";
-import { DEPARTMENT_FILTER_COOKIE, type Role } from "@/lib/constants";
+import { DEPARTMENT_FILTER_COOKIE, seesAllDepartments, type Role } from "@/lib/constants";
 import { scopeFor } from "@/lib/permissions";
+import { isId } from "@/validators/common";
 import { getCurrentUser } from "./session";
 
 const cachedUser = cache(getCurrentUser);
@@ -23,11 +23,10 @@ export async function requirePageRole(...roles: Role[]) {
   return user;
 }
 
-/** The user, their switcher selection (CEO only) and the department filter for this page. */
+/** The user, their switcher selection (CEO and Super Admin) and this page's department filter. */
 export async function getPageScope() {
   const user = await requirePageUser();
   const cookie = (await cookies()).get(DEPARTMENT_FILTER_COOKIE)?.value ?? null;
-  const selectedDepartmentId =
-    user.role === "CEO" && cookie && Types.ObjectId.isValid(cookie) ? cookie : null;
+  const selectedDepartmentId = seesAllDepartments(user.role) && isId(cookie) ? cookie : null;
   return { user, selectedDepartmentId, scope: scopeFor(user, selectedDepartmentId) };
 }

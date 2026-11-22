@@ -1,12 +1,11 @@
 import { subWeeks } from "date-fns";
 import { NextRequest } from "next/server";
-import mongoose, { Types } from "mongoose";
 import { vi } from "vitest";
 import { auth } from "@/lib/auth";
 import type { Role } from "@/lib/constants";
-import { connectDB } from "@/lib/db/connect";
+import { prisma } from "@/lib/db/prisma";
 import { isoWeekOf } from "@/lib/reports/iso-week";
-import { Department, Notification, Project, Task, User, WeeklyReport } from "@/models";
+import { truncateAll } from "../scripts/reset-db";
 
 /**
  * The fixture's approved report sits four weeks back: inside the six-week dashboards, and clear
@@ -17,14 +16,16 @@ export const FIXTURE_WEEK = isoWeekOf(subWeeks(new Date(), 4));
 export const BASE_URL = "http://localhost:3000";
 
 export async function resetDatabase() {
-  await connectDB();
-  await mongoose.connection.db!.dropDatabase();
-  await Promise.all(Object.values(mongoose.models).map((model) => model.createIndexes()));
+  const [current] = await prisma.$queryRaw<{ name: string }[]>`SELECT current_database() AS name`;
+  if (!current?.name.endsWith("_test")) {
+    throw new Error(`Refusing to empty "${current?.name}": tests only run against a *_test database.`);
+  }
+  await truncateAll(prisma);
 }
 
-export function signInAs(user: { _id: Types.ObjectId } | null) {
+export function signInAs(user: { id: string } | null) {
   vi.mocked(auth as unknown as () => Promise<unknown>).mockResolvedValue(
-    user ? { user: { id: String(user._id) } } : null,
+    user ? { user: { id: user.id } } : null,
   );
 }
 
@@ -32,74 +33,106 @@ let emailCounter = 0;
 
 export async function makeUser(
   role: Role,
-  departmentId: Types.ObjectId | null,
-  reportsTo: Types.ObjectId | null,
+  departmentId: string | null,
+  reportsTo: string | null,
   name = `${role} ${++emailCounter}`,
 ) {
-  return User.create({
-    name,
-    email: `user${++emailCounter}@test.local`,
-    role,
-    departmentId,
-    reportsTo,
+  return prisma.user.create({
+    data: { name, email: `user${++emailCounter}@test.local`, role, departmentId, reportsTo },
   });
 }
 
+/** Someone who has signed in with Microsoft for the first time and is waiting for approval. */
+export async function makePendingUser(name = "Waiting Person") {
+  return prisma.user.create({
+    data: { name, email: `pending${++emailCounter}@test.local`, role: "DEVELOPER", approval: "PENDING" },
+  });
+}
+
+/** A report's cached totals for work on one project, as `create` data. */
+export function reportTotals(
+  projectId: string,
+  hours: number,
+  counts: { taskCount?: number; completedCount?: number; blockedCount?: number } = {},
+) {
+  const taskCount = counts.taskCount ?? 1;
+  return {
+    totalHours: hours,
+    taskCount,
+    completedCount: counts.completedCount ?? taskCount,
+    blockedCount: counts.blockedCount ?? 0,
+    byProject: { create: [{ projectId, hours, taskCount }] },
+  };
+}
+
+/** The ids of the people assigned to a project. */
+export async function memberIdsOf(projectId: string) {
+  const members = await prisma.projectMember.findMany({ where: { projectId }, select: { userId: true } });
+  return members.map((member) => member.userId);
+}
+
+/** Replaces a project's members. */
+export async function setMembers(projectId: string, userIds: string[]) {
+  await prisma.projectMember.deleteMany({ where: { projectId } });
+  await prisma.projectMember.createMany({ data: userIds.map((userId) => ({ projectId, userId })) });
+}
+
 /** One department with the full chain: manager, lead, two developers, a project and records. */
-export async function makeDepartment(name: string, ceoId: Types.ObjectId) {
-  const departmentId = new Types.ObjectId();
+export async function makeDepartment(name: string, ceoId: string) {
+  const created = await prisma.department.create({
+    data: { name, code: name.toUpperCase().slice(0, 8), color: "teal", createdBy: ceoId },
+  });
+  const departmentId = created.id;
   const manager = await makeUser("MANAGER", departmentId, ceoId);
-  const lead = await makeUser("TEAM_LEAD", departmentId, manager._id);
-  const developer = await makeUser("DEVELOPER", departmentId, lead._id);
-  const otherDeveloper = await makeUser("DEVELOPER", departmentId, lead._id);
-  const department = await Department.create({
-    _id: departmentId,
-    name,
-    code: name.toUpperCase().slice(0, 8),
-    color: "teal",
-    managerId: manager._id,
-    createdBy: ceoId,
+  const lead = await makeUser("TEAM_LEAD", departmentId, manager.id);
+  const developer = await makeUser("DEVELOPER", departmentId, lead.id);
+  const otherDeveloper = await makeUser("DEVELOPER", departmentId, lead.id);
+  const department = await prisma.department.update({
+    where: { id: departmentId },
+    data: { managerId: manager.id },
   });
-  const project = await Project.create({
-    departmentId,
-    name: `${name} project`,
-    code: "PRJ",
-    color: "teal",
-    ownerId: manager._id,
-    memberIds: [developer._id, lead._id],
-    createdBy: manager._id,
-  });
-  const report = await WeeklyReport.create({
-    userId: developer._id,
-    departmentId,
-    ...FIXTURE_WEEK,
-    status: "MANAGER_APPROVED",
-    totals: {
-      hours: 8,
-      taskCount: 1,
-      completedCount: 1,
-      blockedCount: 0,
-      byProject: [{ projectId: project._id, hours: 8, taskCount: 1 }],
+  const project = await prisma.project.create({
+    data: {
+      departmentId,
+      name: `${name} project`,
+      code: "PRJ",
+      color: "teal",
+      ownerId: manager.id,
+      createdBy: manager.id,
+      members: { create: [{ userId: developer.id }, { userId: lead.id }] },
     },
   });
-  const task = await Task.create({
-    userId: developer._id,
-    departmentId,
-    projectId: project._id,
-    date: FIXTURE_WEEK.weekStart,
-    details: `${name} secret task`,
-    hours: 8,
-    status: "Completed",
-    weeklyReportId: report._id,
-    reportStatus: "MANAGER_APPROVED",
+  const report = await prisma.weeklyReport.create({
+    data: {
+      userId: developer.id,
+      departmentId,
+      ...FIXTURE_WEEK,
+      status: "MANAGER_APPROVED",
+      ...reportTotals(project.id, 8),
+    },
   });
-  const notification = await Notification.create({
-    recipientId: manager._id,
-    departmentId,
-    type: "REPORT_SUBMITTED",
-    title: "Review",
-    message: `${name} notification`,
-    reportId: report._id,
+  const task = await prisma.task.create({
+    data: {
+      userId: developer.id,
+      departmentId,
+      projectId: project.id,
+      date: FIXTURE_WEEK.weekStart,
+      details: `${name} secret task`,
+      hours: 8,
+      status: "Completed",
+      weeklyReportId: report.id,
+      reportStatus: "MANAGER_APPROVED",
+    },
+  });
+  const notification = await prisma.notification.create({
+    data: {
+      recipientId: manager.id,
+      departmentId,
+      type: "REPORT_SUBMITTED",
+      title: "Review",
+      message: `${name} notification`,
+      reportId: report.id,
+    },
   });
   return { department, manager, lead, developer, otherDeveloper, project, report, task, notification };
 }
@@ -108,8 +141,8 @@ export type DepartmentFixture = Awaited<ReturnType<typeof makeDepartment>>;
 
 export async function makeCompany() {
   const ceo = await makeUser("CEO", null, null);
-  const it = await makeDepartment("IT", ceo._id);
-  const hr = await makeDepartment("HR", ceo._id);
+  const it = await makeDepartment("IT", ceo.id);
+  const hr = await makeDepartment("HR", ceo.id);
   return { ceo, it, hr };
 }
 

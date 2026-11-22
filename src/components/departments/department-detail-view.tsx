@@ -104,7 +104,7 @@ export function DepartmentDetailView({ department }: { department: DepartmentDet
               <Pencil />
               Edit
             </Button>
-            {archived ? null : (
+            {archived || department.ledBySuperAdmin ? null : (
               <Button variant="secondary" onClick={() => setDialog("manager")}>
                 <UserCog />
                 Change manager
@@ -204,7 +204,7 @@ export function DepartmentDetailView({ department }: { department: DepartmentDet
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <PeopleList
-          title="Manager"
+          title={department.ledBySuperAdmin ? "Led by the Super Admin" : "Manager"}
           people={department.manager ? [{ ...department.manager, isActive: true }] : []}
         />
         <PeopleList title="Team leads" people={department.teamLeads} />

@@ -1,28 +1,52 @@
-import nodemailer from "nodemailer";
 import type { EmailMessage, EmailService } from "./types";
 
-class SmtpEmailService implements EmailService {
-  private transport = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT ?? 1025),
-    secure: process.env.SMTP_SECURE === "true",
-    auth: process.env.SMTP_USER
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD }
-      : undefined,
-  });
+const SEND_URL = "https://api.sendgrid.com/v3/mail/send";
+const TIMEOUT_MS = 30_000;
 
+const env = (name: string) => (process.env[name] ?? "").trim();
+
+export const isEmailConfigured = () => Boolean(env("SENDGRID_API_KEY") && env("SENDGRID_FROM_EMAIL"));
+
+/** Accepts "someone@example.com" or "Someone <someone@example.com>". */
+export function parseAddress(address: string): { email: string; name?: string } {
+  const match = address.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  if (!match) return { email: address.trim() };
+  const name = match[1]!.replace(/^"|"$/g, "");
+  return name ? { email: match[2]!.trim(), name } : { email: match[2]!.trim() };
+}
+
+/** Outgoing email through SendGrid's Mail Send API. */
+class SendGridEmailService implements EmailService {
   async send(message: EmailMessage) {
-    await this.transport.sendMail({
-      from: process.env.EMAIL_FROM ?? "WorkLog <no-reply@worklog.local>",
-      ...message,
+    if (!isEmailConfigured()) {
+      throw new Error("Email is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL.");
+    }
+    const response = await fetch(SEND_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env("SENDGRID_API_KEY")}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: message.to.trim() }] }],
+        // SENDGRID_FROM_EMAIL must be a sender verified in the SendGrid account.
+        from: parseAddress(env("SENDGRID_FROM_EMAIL")),
+        subject: message.subject,
+        // SendGrid requires text/plain before text/html.
+        content: [
+          { type: "text/plain", value: message.text },
+          { type: "text/html", value: message.html },
+        ],
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    if (!response.ok) {
+      throw new Error(`SendGrid answered ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    }
   }
 }
 
 let service: EmailService | null = null;
 
 export function getEmailService(): EmailService {
-  return (service ??= new SmtpEmailService());
+  return (service ??= new SendGridEmailService());
 }
 
 /**
