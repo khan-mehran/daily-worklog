@@ -114,7 +114,7 @@ It never sends the same reminder or submits the same report twice, so it's safe 
 
 ## Dependency audit
 
-Every project with a Bitbucket repository is checked once a day for vulnerable npm packages, whether or not anyone is working on it. The dashboard says whether every project is clear, and each project's page lists its vulnerable packages.
+Every project with a Bitbucket repository is checked once a day for vulnerable npm packages, whether or not anyone is working on it. The dashboard says whether every project is clear and lists the five worst, the **Dependency audit** page lists every project with its result and vulnerable packages, and each project's page lists its vulnerable packages.
 
 To set it up:
 

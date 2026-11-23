@@ -4,6 +4,7 @@ export type NavIcon =
   | "dashboard"
   | "tasks"
   | "projects"
+  | "audit"
   | "team"
   | "reviews"
   | "departments"
@@ -27,6 +28,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: "dashboard", roles: EVERYONE },
   { href: "/tasks", label: "Tasks", icon: "tasks", roles: EVERYONE },
   { href: "/projects", label: "Projects", icon: "projects", roles: EVERYONE },
+  { href: "/audits", label: "Dependency audit", icon: "audit", roles: EVERYONE },
   { href: "/team", label: "Team", icon: "team", roles: [...ORG_WIDE, "MANAGER", "TEAM_LEAD"] },
   { href: "/reviews", label: "Reviews", icon: "reviews", roles: APPROVERS },
   { href: "/departments", label: "Departments", icon: "departments", roles: ORG_WIDE },

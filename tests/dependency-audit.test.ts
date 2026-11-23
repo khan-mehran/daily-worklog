@@ -5,7 +5,7 @@ import * as projectsRoute from "@/app/api/projects/route";
 import * as projectRoute from "@/app/api/projects/[id]/route";
 import * as checkRoute from "@/app/api/projects/[id]/audit/route";
 import { installedPackages } from "@/lib/audit/lockfile";
-import { auditProject, runDueAudits } from "@/lib/audit/service";
+import { auditProject, auditReport, runDueAudits } from "@/lib/audit/service";
 import { DEPARTMENT_FILTER_COOKIE } from "@/lib/constants";
 import { prisma } from "@/lib/db/prisma";
 import { sendEmailSafely } from "@/lib/email";
@@ -376,6 +376,38 @@ describe("who sees the results", () => {
     expect(body.data.audit.status).toBe("VULNERABLE");
     expect(body.data.audit.findings[0].name).toBe("lodash");
     expect((await call(projectRoute.GET, request("GET", "/x"), { id: company.hr.project.id })).status).toBe(404);
+  });
+});
+
+describe("the Dependency audit page", () => {
+  beforeEach(async () => {
+    network();
+    await link(company.it.project.id);
+    await runDueAudits();
+    await prisma.project.create({
+      data: { departmentId: company.it.department.id, name: "Unlinked", code: "UNL", color: "teal", ownerId: company.it.manager.id, createdBy: company.it.manager.id },
+    });
+  });
+
+  it("lists every project in scope with its packages, linked ones first", async () => {
+    const report = await auditReport(company.it.manager, null);
+    expect(report.projects.map((row) => [row.name, row.repository, row.status, row.findings.length])).toEqual([
+      ["IT project", "acme/portal", "VULNERABLE", 1],
+      ["Unlinked", null, "UNKNOWN", 0],
+    ]);
+    expect(report.projects[0]!.department.name).toBe("IT");
+  });
+
+  it("follows the same visibility as the projects list", async () => {
+    const namesFor = async (actor: Parameters<typeof auditReport>[0], selected: string | null = null) =>
+      (await auditReport(actor, selected)).projects.map((row) => row.name);
+    expect(await namesFor(company.hr.manager)).toEqual(["HR project"]);
+    expect(await namesFor(company.it.developer)).toEqual(["IT project"]);
+    expect(await namesFor(company.it.otherDeveloper)).toEqual([]);
+    expect(await namesFor(company.ceo)).toEqual(["IT project", "HR project", "Unlinked"]);
+    expect(await namesFor(company.ceo, company.hr.department.id)).toEqual(["HR project"]);
+    // The switcher is ignored for everyone below the CEO.
+    expect(await namesFor(company.it.manager, company.hr.department.id)).toEqual(["IT project", "Unlinked"]);
   });
 });
 

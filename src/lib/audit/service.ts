@@ -1,5 +1,5 @@
 import type { Prisma, ProjectAudit } from "@prisma/client";
-import { AUDIT_SEVERITIES, type AuditStatus, type PaletteColor } from "@/lib/constants";
+import { AUDIT_SEVERITIES, type AuditStatus, type PaletteColor, type ProjectStatus } from "@/lib/constants";
 import { prisma } from "@/lib/db/prisma";
 import { notify } from "@/lib/notifications";
 import { projectScope, type Actor } from "@/lib/permissions";
@@ -177,5 +177,49 @@ export async function auditOverview(actor: Actor, selectedDepartmentId: string |
   return { configured: bitbucketConfigured(), unlinked, projects: rows };
 }
 
+/**
+ * The Dependency audit page: every project the actor can see, worst first, each with its
+ * vulnerable packages. Projects without a repository are listed too, so it shows what isn't checked.
+ */
+export async function auditReport(actor: Actor, selectedDepartmentId: string | null) {
+  const projects = await prisma.project.findMany({
+    where: projectScope(actor, selectedDepartmentId),
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      color: true,
+      status: true,
+      repository: true,
+      audit: true,
+      department: { select: { name: true, color: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+  const rows = projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    code: project.code,
+    color: project.color as PaletteColor,
+    projectStatus: project.status as ProjectStatus,
+    repository: project.repository,
+    department: { name: project.department.name, color: project.department.color as PaletteColor },
+    ...summarise(project.repository ? project.audit : null),
+    findings: (project.repository ? (project.audit?.findings ?? []) : []) as unknown as AuditFinding[],
+  }));
+  const weight = (row: (typeof rows)[number]) =>
+    AUDIT_SEVERITIES.reduce((sum, severity) => sum * 1000 + Math.min(row.counts[severity], 999), 0);
+  rows.sort(
+    (a, b) =>
+      Number(Boolean(b.repository)) - Number(Boolean(a.repository)) ||
+      STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+      weight(b) - weight(a) ||
+      Number(Boolean(b.error)) - Number(Boolean(a.error)) ||
+      a.name.localeCompare(b.name),
+  );
+  return { configured: bitbucketConfigured(), projects: rows };
+}
+
+export type AuditReport = Awaited<ReturnType<typeof auditReport>>;
 export type AuditOverview = Awaited<ReturnType<typeof auditOverview>>;
 export type ProjectAuditDetail = NonNullable<ReturnType<typeof serialiseAudit>>;

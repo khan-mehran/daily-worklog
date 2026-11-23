@@ -37,13 +37,16 @@ function SeverityBadges({ counts }: { counts: Summary["counts"] }) {
   );
 }
 
+/** The dashboard card lists this many, worst first. The Dependency audit page has them all. */
+const ON_DASHBOARD = 5;
+
 const STATUS_TEXT: Record<Exclude<AuditStatus, "VULNERABLE">, string> = {
   CLEAR: "Clear",
   NO_LOCKFILE: "No package-lock.json",
   UNKNOWN: "Not checked yet",
 };
 
-function Result({ audit }: { audit: Summary }) {
+export function AuditResult({ audit }: { audit: Summary }) {
   if (audit.status === "VULNERABLE") return <SeverityBadges counts={audit.counts} />;
   if (audit.status === "UNKNOWN" && audit.error) return <Badge className="text-warning-text">Couldn&apos;t check</Badge>;
   return (
@@ -52,7 +55,7 @@ function Result({ audit }: { audit: Summary }) {
 }
 
 /** When it was checked, and why the latest try failed if it did. */
-function CheckedLine({ audit }: { audit: Summary }) {
+export function CheckedLine({ audit }: { audit: Summary }) {
   if (audit.error) {
     return (
       <span className="text-warning-text">
@@ -115,15 +118,15 @@ export function DependencyAuditCard({ className }: { className?: string }) {
                 Bitbucket isn&apos;t connected, so nothing is being checked. A Super Admin adds the token in Site settings.
               </p>
             )}
-            <ul className="max-h-80 divide-y overflow-y-auto">
-              {data.projects.map((project) => (
+            <ul className="divide-y">
+              {data.projects.slice(0, ON_DASHBOARD).map((project) => (
                 <li key={project.id} className="py-2.5 text-sm">
                   <div className="flex items-start justify-between gap-3">
                     <Link href={`/projects/${project.id}`} className="flex min-w-0 items-center gap-2 hover:underline">
                       <ColorDot color={project.color} />
                       <span className="truncate">{project.name}</span>
                     </Link>
-                    <Result audit={project} />
+                    <AuditResult audit={project} />
                   </div>
                   <p className="text-muted mt-0.5 pl-[1.125rem] text-xs">
                     <CheckedLine audit={project} />
@@ -131,19 +134,48 @@ export function DependencyAuditCard({ className }: { className?: string }) {
                 </li>
               ))}
             </ul>
+            <Link href="/audits" className="text-primary mt-2 inline-block text-sm font-medium underline">
+              {data.projects.length > ON_DASHBOARD ? `See all ${data.projects.length} projects` : "See the details"}
+            </Link>
           </>
         )}
         {data && data.unlinked > 0 && data.projects.length > 0 ? (
-          <p className="text-muted mt-3 text-xs">
+          <p className="text-muted mt-2 text-xs">
             {data.unlinked} other project{data.unlinked === 1 ? " has" : "s have"} no repository linked, so{" "}
-            {data.unlinked === 1 ? "it isn't" : "they aren't"} checked.{" "}
-            <Link href="/projects" className="text-primary font-medium underline">
-              See projects
-            </Link>
+            {data.unlinked === 1 ? "it isn't" : "they aren't"} checked.
           </p>
         ) : null}
       </div>
     </Card>
+  );
+}
+
+/** The vulnerable packages, worst first, each with its worst advisory. */
+export function FindingsList({ findings, className }: { findings: ProjectAuditDetail["findings"]; className?: string }) {
+  if (findings.length === 0) return null;
+  return (
+    <ul className={cn("divide-y", className)}>
+      {findings.map((finding) => (
+        <li key={finding.name} className="flex items-start gap-3 py-2.5 text-sm">
+          <Badge className={cn("mt-0.5", SEVERITY_CLASS[finding.severity])}>{finding.severity}</Badge>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium break-words">
+              {finding.name} <span className="text-muted font-normal">{finding.versions.join(", ")}</span>
+            </p>
+            <p className="text-muted text-xs">
+              {finding.url ? (
+                <a href={finding.url} target="_blank" rel="noreferrer" className="hover:underline">
+                  {finding.title}
+                </a>
+              ) : (
+                finding.title
+              )}
+              {finding.advisories > 1 ? ` and ${finding.advisories - 1} more` : ""}
+            </p>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -182,7 +214,7 @@ export function ProjectAuditCard({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Result audit={audit} />
+          <AuditResult audit={audit} />
           {canManage ? (
             <Button variant="secondary" size="sm" disabled={check.isPending} onClick={() => check.mutate()}>
               <RefreshCw className={check.isPending ? "animate-spin" : undefined} />
@@ -191,30 +223,7 @@ export function ProjectAuditCard({
           ) : null}
         </div>
       </div>
-      {audit.findings.length > 0 ? (
-        <ul className="mt-3 max-h-80 divide-y overflow-y-auto">
-          {audit.findings.map((finding) => (
-            <li key={finding.name} className="flex items-start gap-3 py-2.5 text-sm">
-              <Badge className={cn("mt-0.5", SEVERITY_CLASS[finding.severity])}>{finding.severity}</Badge>
-              <div className="min-w-0 flex-1">
-                <p className="font-medium break-words">
-                  {finding.name} <span className="text-muted font-normal">{finding.versions.join(", ")}</span>
-                </p>
-                <p className="text-muted text-xs">
-                  {finding.url ? (
-                    <a href={finding.url} target="_blank" rel="noreferrer" className="hover:underline">
-                      {finding.title}
-                    </a>
-                  ) : (
-                    finding.title
-                  )}
-                  {finding.advisories > 1 ? ` and ${finding.advisories - 1} more` : ""}
-                </p>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <FindingsList findings={audit.findings} className="mt-3 max-h-80 overflow-y-auto" />
       {audit.status === "VULNERABLE" ? (
         <p className="text-muted mt-3 text-xs">
           Run npm audit in the project to see how to fix these. Its totals can be higher, because it also counts the
