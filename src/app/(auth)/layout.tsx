@@ -1,4 +1,5 @@
 import { BarChart3, Check, ClipboardCheck, ListChecks, NotebookPen } from "lucide-react";
+import Image from "next/image";
 import type { ReactNode } from "react";
 
 const FEATURES = [
@@ -94,8 +95,17 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
         </p>
       </section>
 
-      <section className="flex flex-col items-center justify-center px-4 py-10 sm:px-8">
-        <div className="w-full max-w-md">{children}</div>
+      <section className="flex flex-col items-center px-4 py-10 sm:px-8">
+        <div className="my-auto w-full max-w-md">{children}</div>
+        {/* The logo is one dark colour, so dark mode inverts it. */}
+        <Image
+          src="/gord-logo.svg"
+          alt="GORD"
+          width={126}
+          height={47}
+          unoptimized
+          className="mt-10 h-10 w-auto opacity-80 dark:invert"
+        />
       </section>
     </main>
   );
