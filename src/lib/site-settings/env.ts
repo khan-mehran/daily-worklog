@@ -12,7 +12,7 @@ export interface EnvField {
   key: string;
   label: string;
   hint: string;
-  group: "Application" | "Microsoft sign-in" | "Access" | "Email" | "AI" | "Reminders";
+  group: "Application" | "Microsoft sign-in" | "Access" | "Email" | "AI" | "Reminders" | "Dependency audit";
   /** Never sent to the browser. Left blank on save, it keeps its value. */
   secret?: boolean;
   /** Can't be emptied. */
@@ -122,9 +122,22 @@ export const ENV_FIELDS: readonly EnvField[] = [
   {
     key: "CRON_SECRET",
     label: "Cron secret",
-    hint: "Protects the reminders endpoint. The scheduled job must send the same value.",
+    hint: "Protects the reminders and dependency audit endpoints. The scheduled job must send the same value.",
     group: "Reminders",
     secret: true,
+  },
+  {
+    key: "BITBUCKET_TOKEN",
+    label: "Bitbucket token",
+    hint: "Read-only access to your repositories, used once a day to read each project's package-lock.json. An access token needs only the Repositories: Read scope.",
+    group: "Dependency audit",
+    secret: true,
+  },
+  {
+    key: "BITBUCKET_USERNAME",
+    label: "Bitbucket username",
+    hint: "Leave empty for an access token. For an API token, enter the Atlassian account's email address. For an app password, enter the Bitbucket username.",
+    group: "Dependency audit",
   },
 ];
 

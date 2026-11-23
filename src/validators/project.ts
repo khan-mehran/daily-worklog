@@ -20,6 +20,33 @@ const optionalDay = z
   ])
   .transform((value) => value || null);
 
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/;
+
+/**
+ * "workspace/repo", or "workspace/repo/folder" when package-lock.json isn't at the top. A pasted
+ * Bitbucket address becomes "workspace/repo". Returns null for anything else.
+ */
+export function normaliseRepository(input: string) {
+  let value = input.trim();
+  const address = /^(?:https?:\/\/(?:[^@/]+@)?bitbucket\.org\/|git@bitbucket\.org:)([^/\s]+)\/([^/\s]+)/i.exec(value);
+  if (address) value = `${address[1]}/${address[2]}`;
+  value = value.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+  return REPOSITORY.test(value) && !value.split("/").some((part) => /^\.+$/.test(part)) ? value : null;
+}
+
+/** The Bitbucket repository the dependency audit reads. Empty and null both mean none. */
+const repository = z
+  .union([z.string().trim().max(200), z.null()])
+  .transform((value, context) => {
+    if (!value) return null;
+    const normalised = normaliseRepository(value);
+    if (!normalised) {
+      context.addIssue({ code: "custom", message: "Use workspace/repository, as in the Bitbucket address" });
+      return z.NEVER;
+    }
+    return normalised;
+  });
+
 const endsAfterStart = (
   value: { startDate?: string | null; endDate?: string | null },
   context: z.RefinementCtx,
@@ -43,13 +70,14 @@ export const createProjectSchema = z
     status: status.default("Active"),
     startDate: optionalDay.optional(),
     endDate: optionalDay.optional(),
+    repository: repository.optional(),
     memberIds: z.array(idSchema).max(200).default([]),
   })
   .superRefine(endsAfterStart);
 export type CreateProjectInput = z.output<typeof createProjectSchema>;
 
 export const updateProjectSchema = z
-  .object({ name, code, description, color: paletteColorSchema, status, startDate: optionalDay, endDate: optionalDay })
+  .object({ name, code, description, color: paletteColorSchema, status, startDate: optionalDay, endDate: optionalDay, repository })
   .partial()
   .superRefine(endsAfterStart)
   .refine((value) => Object.keys(value).length > 0, "Nothing to update");

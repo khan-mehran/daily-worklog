@@ -42,7 +42,8 @@ People are emailed when they're assigned to a project, when a week is waiting fo
 ### Optional settings
 
 - `ANTHROPIC_API_KEY`: turns on "Improve with AI". Without it, the button explains it isn't set up, and saving still works.
-- `CRON_SECRET`: protects the reminders endpoint. See [Reminders](#reminders).
+- `CRON_SECRET`: protects the reminders and dependency audit endpoints. See [Reminders](#reminders).
+- `BITBUCKET_TOKEN`: turns on the daily [dependency audit](#dependency-audit). Without it, no project is audited.
 
 ## Roles
 
@@ -87,7 +88,7 @@ People are emailed when they're assigned to a project, when a week is waiting fo
 | `npm run db:migrate` | Apply the migrations the database hasn't had yet, keeping its data        |
 | `npm run db:migrate:new` | After editing `prisma/schema.prisma`: write a new migration and apply it |
 | `npm run db:studio`  | Browse the data in Prisma Studio                                          |
-| `npm run cron`       | Run the reminders every hour, for self-hosting                            |
+| `npm run cron`       | Run the reminders and the dependency audit every hour, for self-hosting   |
 | `npm test`           | Unit and API tests, against their own `worklog_test` database, created on first use |
 | `npm run test:e2e`   | Browser tests: builds the app into `.next-e2e`, serves it on port 3100 and uses its own `worklog_e2e` database. Needs PostgreSQL running and about 3 GB of free memory |
 | `npm run typecheck`  | TypeScript check                                                          |
@@ -111,13 +112,37 @@ It never sends the same reminder or submits the same report twice, so it's safe 
   curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reminders
   ```
 
+## Dependency audit
+
+Every project with a Bitbucket repository is checked once a day for vulnerable npm packages, whether or not anyone is working on it. The dashboard says whether every project is clear, and each project's page lists its vulnerable packages.
+
+To set it up:
+
+1. Create a read-only Bitbucket token and save it under **Site settings → Dependency audit** (or as `BITBUCKET_TOKEN`). The only scope it needs is Repositories: Read.
+   - A workspace, project or repository **access token** needs nothing else.
+   - For an Atlassian **API token**, also set `BITBUCKET_USERNAME` to the account's email address. For an app password, set it to the Bitbucket username.
+2. On each project, choose **Edit** and fill in **Bitbucket repository**: `workspace/repository`, or `workspace/repository/folder` when `package-lock.json` isn't at the top of the repository. Pasting the repository's address works too. The repository can be in any workspace the token can read, and it's checked as soon as the project is saved.
+3. Schedule `GET /api/cron/audit` with the header `Authorization: Bearer <CRON_SECRET>`. `vercel.json` runs it daily at 03:00 UTC, and `npm run cron` calls it every hour. It only checks projects it hasn't checked in the last 20 hours, and retries a failed check within the hour, so calling it often is safe. Add `?force=1` to check every project now.
+
+How it works:
+
+- The server reads `package-lock.json` (or `npm-shrinkwrap.json`) from the head of the repository's main branch through the Bitbucket API. Nothing is cloned and no code is stored.
+- It asks the npm registry's advisory database, the one `npm audit` uses, about the installed versions. Only package names and versions are sent.
+- A project is clear here exactly when `npm audit` reports nothing. The counts are of vulnerable packages by their worst advisory. `npm audit` also counts packages that depend on a vulnerable one, so its totals can be higher.
+- When a project becomes vulnerable, or gets worse, its owner and the department's manager are notified in the app and by email. They aren't told again every day.
+- If a check fails, the last result stays and the reason is shown beside it.
+- A repository with no npm lockfile (yarn, pnpm, or not a Node project) is shown as "No package-lock.json" and isn't counted as clear.
+
+Whoever manages a project can also run its check from the project's page with **Check now**.
+
 ## Project layout
 
 ```
 src/app          Pages and API route handlers
 src/components   UI: ui/ primitives, layout/ app shell, one folder per feature
 src/lib          auth, permissions, api, db, email, ai, reports (workflow, visibility), tasks,
-                 projects, departments, users, dashboards, export, notifications, reminders, search
+                 projects, departments, users, dashboards, export, notifications, reminders, search,
+                 audit (the daily dependency audit)
 prisma           The database schema and its SQL migrations
 src/validators   Zod schemas shared by client and server
 src/hooks        Shared React hooks

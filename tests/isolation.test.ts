@@ -63,6 +63,7 @@ const ROUTE_POLICIES: Record<string, string> = {
   projects: "Tested below and in projects.test.ts.",
   "projects/[id]": "Tested below and in projects.test.ts.",
   "projects/[id]/members": "Tested below and in projects.test.ts.",
+  "projects/[id]/audit": "Whoever manages the project; another department's is a 404. Tested in dependency-audit.test.ts.",
   tasks: "Own tasks only. Tested in tasks-and-reports.test.ts.",
   "tasks/[id]": "Own tasks only: others' are a 404. Tested in tasks-and-reports.test.ts.",
   "tasks/copy": "Copies the caller's own tasks only.",
@@ -83,11 +84,13 @@ const ROUTE_POLICIES: Record<string, string> = {
   "dashboard/manager": "Tested below and in dashboards-export-ai.test.ts.",
   "dashboard/ceo": "CEO only, approved work only. Tested in dashboards-export-ai.test.ts.",
   "dashboard/activity": "Tested in dashboards-export-ai.test.ts.",
+  "dashboard/audit": "Projects in the caller's project scope only. Tested in dependency-audit.test.ts.",
   "export/tasks": "Tested below and in dashboards-export-ai.test.ts.",
   "ai/improve": "No department data. Tested in dashboards-export-ai.test.ts.",
   team: "Tested in dashboards-export-ai.test.ts.",
   search: "Tested below and in dashboards-export-ai.test.ts.",
   "cron/reminders": "Secret-protected job, no response data. Tested in notifications-and-reminders.test.ts.",
+  "cron/audit": "Secret-protected job that returns counts only. Tested in dependency-audit.test.ts.",
 };
 
 function listApiRoutes(directory: string, root = directory): string[] {

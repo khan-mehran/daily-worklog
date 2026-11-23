@@ -61,6 +61,17 @@ export type DepartmentStatus = (typeof DEPARTMENT_STATUSES)[number];
 export const PROJECT_STATUSES = ["Active", "On hold", "Completed"] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+/**
+ * The result of a project's last dependency audit that worked. NO_LOCKFILE is a repository
+ * without a package-lock.json, and UNKNOWN a project no check has worked for yet.
+ */
+export const AUDIT_STATUSES = ["CLEAR", "VULNERABLE", "NO_LOCKFILE", "UNKNOWN"] as const;
+export type AuditStatus = (typeof AUDIT_STATUSES)[number];
+
+/** Worst first. */
+export const AUDIT_SEVERITIES = ["critical", "high", "moderate", "low"] as const;
+export type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
+
 export const TASK_STATUSES = ["Completed", "In Progress", "Blocked"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { DependencyAuditCard } from "@/components/audit/dependency-audit";
 import { CategoryBars, DonutChart, StackedBars, TrendLine } from "@/components/charts/lazy-dashboard-charts";
 import { ReportStatusBadge } from "@/components/reports/report-status-badge";
 import { Avatar, Badge, Card, ColorDot } from "@/components/ui/misc";
@@ -96,6 +97,7 @@ export function DeveloperDashboard({ compact }: { compact?: boolean }) {
           </ol>
         </ChartCard>
         <BlockersList items={data.blockers} />
+        {compact ? null : <DependencyAuditCard />}
         {compact ? null : <ActivityFeed />}
       </div>
     </>
@@ -149,6 +151,7 @@ export function LeadDashboard() {
           </ul>
         </ChartCard>
         <BlockersList items={data.blockers} showPerson />
+        <DependencyAuditCard className="lg:col-span-2" />
       </div>
       <OwnWorkSection />
     </>
@@ -218,6 +221,7 @@ export function ManagerDashboard() {
           <TrendLine title="Department hours per week" data={data.trend.map((week) => ({ label: week.label, value: week.hours }))} />
         </ChartCard>
         <ActivityFeed />
+        <DependencyAuditCard className="lg:col-span-2" />
         <ChartCard title="Project health" className="lg:col-span-2" empty={data.projectHealth.length === 0} emptyText="Your department has no projects yet.">
           <ProjectTable rows={data.projectHealth} />
         </ChartCard>
@@ -352,6 +356,7 @@ export function CeoDashboard() {
         <ChartCard title="Project portfolio" className="lg:col-span-2" empty={empty}>
           <ProjectTable rows={data.portfolio} showDepartment />
         </ChartCard>
+        <DependencyAuditCard />
         <ActivityFeed />
       </div>
     </>

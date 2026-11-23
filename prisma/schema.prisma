@@ -80,6 +80,7 @@ enum NotificationType {
   REPORT_ACKNOWLEDGED
   REPORT_CHANGES_REQUESTED
   REMINDER
+  SECURITY_ALERT
 }
 
 model User {
@@ -165,6 +166,9 @@ model Project {
   status       String    @default("Active")
   startDate    DateTime? @db.Date
   endDate      DateTime? @db.Date
+  /// The Bitbucket repository the dependency audit reads: "workspace/repo", or
+  /// "workspace/repo/folder" when package-lock.json isn't at the top. Null means not audited.
+  repository   String?
   ownerId      String    @db.Uuid
   createdBy    String    @db.Uuid
   createdAt    DateTime  @default(now()) @db.Timestamptz(3)
@@ -174,6 +178,7 @@ model Project {
   owner      User       @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   creator    User       @relation("ProjectCreator", fields: [createdBy], references: [id], onDelete: Restrict)
 
+  audit         ProjectAudit?
   members       ProjectMember[]
   tasks         Task[]
   taskTemplates TaskTemplate[]
@@ -181,6 +186,29 @@ model Project {
 
   @@unique([departmentId, code])
   @@index([departmentId, status])
+}
+
+/// The latest dependency audit of a project's repository. See src/lib/audit/service.ts.
+model ProjectAudit {
+  projectId   String    @id @db.Uuid
+  /// One of AUDIT_STATUSES in src/lib/constants.ts: the result of the last check that worked.
+  status      String
+  critical    Int       @default(0)
+  high        Int       @default(0)
+  moderate    Int       @default(0)
+  low         Int       @default(0)
+  /// The vulnerable packages, worst first: AuditFinding[] in src/lib/audit/advisories.ts.
+  findings    Json      @default("[]")
+  /// When a check last worked. Null until one has.
+  checkedAt   DateTime? @db.Timestamptz(3)
+  /// When a check was last tried.
+  attemptedAt DateTime  @db.Timestamptz(3)
+  /// Why the last try failed. Null when it worked. The fields above then still hold the last result.
+  error       String?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([attemptedAt])
 }
 
 /// Who is assigned to a project.

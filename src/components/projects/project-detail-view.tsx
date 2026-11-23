@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
+import { ProjectAuditCard } from "@/components/audit/dependency-audit";
 import { LazyWeeklyHoursChart } from "@/components/charts/lazy-weekly-hours-chart";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -175,6 +176,16 @@ export function ProjectDetailView({
           )}
         </Card>
       </div>
+
+      {project.repository && project.audit ? (
+        <ProjectAuditCard
+          className="mb-6"
+          projectId={project.id}
+          repository={project.repository}
+          audit={project.audit}
+          canManage={canManage}
+        />
+      ) : null}
 
       <Card className="p-5">
         <h2 className="font-semibold">Recent tasks</h2>

@@ -74,6 +74,7 @@ export function ProjectDialog({
       status: (project?.status as ProjectStatus) ?? "Active",
       startDate: project?.startDate ?? "",
       endDate: project?.endDate ?? "",
+      repository: project?.repository ?? "",
     });
   }, [open, project, reset]);
 
@@ -153,6 +154,21 @@ export function ProjectDialog({
             />
           </Field>
         </div>
+        <Field
+          label="Bitbucket repository"
+          htmlFor="project-repository"
+          error={errors.repository?.message}
+          hint="Optional. With it, the project's npm dependencies are checked for vulnerabilities every day. Add /folder if package-lock.json isn't at the top."
+        >
+          <Input
+            id="project-repository"
+            placeholder="workspace/repository"
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={Boolean(errors.repository)}
+            {...register("repository")}
+          />
+        </Field>
         <div className="space-y-1.5">
           <p className="text-sm font-medium">Colour</p>
           <Controller

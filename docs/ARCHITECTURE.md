@@ -137,6 +137,7 @@ PostgreSQL through Prisma. The schema is [`prisma/schema.prisma`](../prisma/sche
 - Ids are UUIDs. Calendar days (task dates, week bounds) are `DATE` columns, read as midnight UTC.
 - A project's people are `ProjectMember` rows. A report's per-project totals are `ReportProjectTotal` rows and its history is `ReportTrailEntry` rows.
 - Two indexes can't be written in the Prisma schema and live in the first migration's SQL: the case-insensitive unique department name, and one synced task per person, project and day.
+- A project's latest dependency audit is one `ProjectAudit` row, written by [`src/lib/audit/service.ts`](../src/lib/audit/service.ts). It has no `departmentId`: read it through its project, with `projectScope`. A failed check keeps the last result and sets `error`.
 - Import the client from [`src/lib/db/prisma.ts`](../src/lib/db/prisma.ts). There is nothing to connect: it opens its pool on first use.
 
 ## Live notifications

@@ -1,5 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { badRequest, conflict, forbidden, notFound } from "@/lib/api/errors";
+import { badRequest, conflict, forbidden, notFound, tooManyRequests } from "@/lib/api/errors";
+import { consumeRateLimit } from "@/lib/api/rate-limit";
+import { bitbucketConfigured } from "@/lib/audit/bitbucket";
+import { auditProject, serialiseAudit } from "@/lib/audit/service";
 import type { PaletteColor, ProjectStatus, Role, TaskStatus } from "@/lib/constants";
 import { prisma } from "@/lib/db/prisma";
 import { notify } from "@/lib/notifications";
@@ -14,6 +17,7 @@ import type {
 
 const WEEKS_IN_CHART = 8;
 const RECENT_TASKS = 10;
+const CHECKS_PER_HOUR = 10;
 
 const toDay = (value: string | null | undefined) => (value ? new Date(`${value}T00:00:00.000Z`) : null);
 const fromDay = (value: Date | null) => (value ? value.toISOString().slice(0, 10) : null);
@@ -38,6 +42,7 @@ function serialise(project: ProjectRecord) {
     status: project.status as ProjectStatus,
     startDate: fromDay(project.startDate),
     endDate: fromDay(project.endDate),
+    repository: project.repository,
     department: {
       id: project.department.id,
       name: project.department.name,
@@ -166,6 +171,15 @@ async function notifyAssigned(
   }
 }
 
+/**
+ * Checks a repository as soon as it is linked, so whoever pasted its address sees the result, or
+ * why it can't be read, without waiting for the daily run. Saving never fails because of it:
+ * auditProject stores a failure beside the project instead of throwing.
+ */
+async function auditLinkedRepository(project: Parameters<typeof auditProject>[0]) {
+  if (project.repository && bitbucketConfigured()) await auditProject(project);
+}
+
 export async function createProject(actor: Actor, input: CreateProjectInput) {
   const departmentId = await projectDepartmentOf(actor);
   if (!departmentId) {
@@ -182,6 +196,7 @@ export async function createProject(actor: Actor, input: CreateProjectInput) {
       description: input.description,
       color: input.color,
       status: input.status,
+      repository: input.repository ?? null,
       departmentId,
       startDate: toDay(input.startDate),
       endDate: toDay(input.endDate),
@@ -192,6 +207,7 @@ export async function createProject(actor: Actor, input: CreateProjectInput) {
   });
   await audit(actor, "project.create", project.id, { memberCount: memberIds.length });
   await notifyAssigned(actor, project, memberIds);
+  await auditLinkedRepository(project);
   return project;
 }
 
@@ -210,6 +226,11 @@ export async function updateProject(actor: Actor, id: string, patch: UpdateProje
     where: { id },
     data: { ...fields, startDate: nextStart, endDate: nextEnd },
   });
+  // The stored result describes the old repository, so it goes, and the new one is checked now.
+  if (fields.repository !== undefined && fields.repository !== project.repository) {
+    await prisma.projectAudit.deleteMany({ where: { projectId: id } });
+    await auditLinkedRepository(updated);
+  }
   await audit(actor, "project.update", id, { changes: Object.keys(patch) });
   return updated;
 }
@@ -237,6 +258,19 @@ export async function updateProjectMembers(actor: Actor, id: string, { add, remo
   await audit(actor, "project.members", id, { added: finalAdd, removed: remove });
   // Only people who weren't on the project before hear about it.
   await notifyAssigned(actor, project, newlyAdded);
+}
+
+/** Runs the dependency audit for one project now, instead of waiting for the daily run. */
+export async function checkProjectDependencies(actor: Actor, id: string) {
+  const project = await requireManageableProject(actor, id);
+  if (!project.repository) throw badRequest("Link a Bitbucket repository to this project first.");
+  if (!bitbucketConfigured()) {
+    throw conflict("Bitbucket isn't connected yet. A Super Admin adds the token in Site settings.", "AUDIT_NOT_CONFIGURED");
+  }
+  if (!(await consumeRateLimit(`audit:${id}`, CHECKS_PER_HOUR, 60 * 60 * 1000))) {
+    throw tooManyRequests(`A project can be checked ${CHECKS_PER_HOUR} times an hour. Try again later.`);
+  }
+  return serialiseAudit(project.repository, await auditProject(project))!;
 }
 
 /** Only a project with no logged work can be deleted. Otherwise mark it Completed. */
@@ -304,10 +338,14 @@ async function getProjectActivity(actor: Actor, projectId: string) {
 export async function getProjectDetail(actor: Actor, id: string) {
   const project = await prisma.project.findFirst({
     where: { id, ...projectScope(actor) },
-    include: PROJECT_INCLUDE,
+    include: { ...PROJECT_INCLUDE, audit: true },
   });
   if (!project) return null;
-  return { ...serialise(project), activity: await getProjectActivity(actor, project.id) };
+  return {
+    ...serialise(project),
+    audit: serialiseAudit(project.repository, project.audit),
+    activity: await getProjectActivity(actor, project.id),
+  };
 }
 
 export type ProjectSummary = ReturnType<typeof serialise>;
