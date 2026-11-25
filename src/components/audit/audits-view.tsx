@@ -66,7 +66,7 @@ export function AuditsView({ report, showDepartment }: { report: AuditReport; sh
 
       {report.configured ? null : (
         <Card className="text-warning-text mb-4 p-4 text-sm">
-          Bitbucket isn&apos;t connected, so nothing is being checked. A Super Admin adds the token in Site settings.
+          Bitbucket isn&apos;t connected, so nothing is being checked. A manager connects their account in Settings, or a Super Admin adds a token in Site settings.
         </Card>
       )}
 

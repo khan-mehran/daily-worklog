@@ -1,23 +1,29 @@
 import type { Prisma } from "@prisma/client";
 import { badRequest, conflict, forbidden, notFound, tooManyRequests } from "@/lib/api/errors";
 import { consumeRateLimit } from "@/lib/api/rate-limit";
-import { bitbucketConfigured } from "@/lib/audit/bitbucket";
+import { listRepositories, type BitbucketRepository } from "@/lib/audit/bitbucket";
+import { AuditError } from "@/lib/audit/errors";
 import { auditProject, serialiseAudit } from "@/lib/audit/service";
-import type { PaletteColor, ProjectStatus, Role, TaskStatus } from "@/lib/constants";
+import { bitbucketDepartmentOf, credentialsFor, departmentConnection } from "@/lib/bitbucket/connection";
+import { PALETTE, type PaletteColor, type ProjectStatus, type Role, type TaskStatus } from "@/lib/constants";
 import { prisma } from "@/lib/db/prisma";
 import { notify } from "@/lib/notifications";
 import { canManageProjects, projectScope, type Actor } from "@/lib/permissions";
 import { visibleReportsFilter } from "@/lib/reports/visibility";
-import type {
-  CreateProjectInput,
-  ListProjectsQuery,
-  UpdateMembersInput,
-  UpdateProjectInput,
+import {
+  normaliseRepository,
+  type CreateProjectInput,
+  type ListProjectsQuery,
+  type UpdateMembersInput,
+  type UpdateProjectInput,
 } from "@/validators/project";
 
 const WEEKS_IN_CHART = 8;
 const RECENT_TASKS = 10;
 const CHECKS_PER_HOUR = 10;
+const IMPORTS_PER_HOUR = 10;
+/** The most projects one import adds. Whatever is left is offered again. */
+const IMPORT_LIMIT = 500;
 
 const toDay = (value: string | null | undefined) => (value ? new Date(`${value}T00:00:00.000Z`) : null);
 const fromDay = (value: Date | null) => (value ? value.toISOString().slice(0, 10) : null);
@@ -177,7 +183,10 @@ async function notifyAssigned(
  * auditProject stores a failure beside the project instead of throwing.
  */
 async function auditLinkedRepository(project: Parameters<typeof auditProject>[0]) {
-  if (project.repository && bitbucketConfigured()) await auditProject(project);
+  if (!project.repository) return;
+  // An unreadable saved token still counts: the check runs and stores that as its error.
+  const connected = await credentialsFor(project.departmentId).catch((error) => error instanceof AuditError);
+  if (connected) await auditProject(project);
 }
 
 export async function createProject(actor: Actor, input: CreateProjectInput) {
@@ -264,13 +273,121 @@ export async function updateProjectMembers(actor: Actor, id: string, { add, remo
 export async function checkProjectDependencies(actor: Actor, id: string) {
   const project = await requireManageableProject(actor, id);
   if (!project.repository) throw badRequest("Link a Bitbucket repository to this project first.");
-  if (!bitbucketConfigured()) {
-    throw conflict("Bitbucket isn't connected yet. A Super Admin adds the token in Site settings.", "AUDIT_NOT_CONFIGURED");
+  // An unreadable saved token isn't "not connected": the check runs and stores that as its error.
+  const connected = await credentialsFor(project.departmentId).catch((error) => error instanceof AuditError);
+  if (!connected) {
+    throw conflict(
+      "Bitbucket isn't connected yet. Your manager connects it in Settings, or a Super Admin adds a token in Site settings.",
+      "AUDIT_NOT_CONFIGURED",
+    );
   }
   if (!(await consumeRateLimit(`audit:${id}`, CHECKS_PER_HOUR, 60 * 60 * 1000))) {
     throw tooManyRequests(`A project can be checked ${CHECKS_PER_HOUR} times an hour. Try again later.`);
   }
   return serialiseAudit(project.repository, await auditProject(project))!;
+}
+
+/** "workspace/repo" in lower case: what tells whether a repository already has a project. */
+const repositoryKey = (repository: string) => repository.toLowerCase().split("/").slice(0, 2).join("/");
+
+/**
+ * The repositories in the department's Bitbucket account that no project of the department is
+ * linked to yet. Null when the department hasn't connected Bitbucket.
+ */
+async function importableRepositories(departmentId: string) {
+  const connection = await departmentConnection(departmentId);
+  if (!connection) return null;
+  const [repositories, linked] = await Promise.all([
+    listRepositories(connection.credentials, connection.workspaces),
+    prisma.project.findMany({ where: { departmentId, repository: { not: null } }, select: { repository: true } }),
+  ]);
+  const taken = new Set(linked.map((project) => repositoryKey(project.repository!)));
+  // The address is checked like one typed into the project form, so nothing odd is stored.
+  return repositories.filter(
+    (repository) =>
+      normaliseRepository(repository.fullName) === repository.fullName && !taken.has(repositoryKey(repository.fullName)),
+  );
+}
+
+/**
+ * What the Projects page offers to import. A Bitbucket problem is reported, not thrown, so the
+ * page still loads.
+ */
+export async function bitbucketImportPreview(actor: Actor) {
+  const departmentId = await bitbucketDepartmentOf(actor);
+  if (!departmentId) throw forbidden();
+  try {
+    const repositories = await importableRepositories(departmentId);
+    return {
+      connected: repositories !== null,
+      repositories: (repositories ?? []).map((repository) => repository.fullName),
+      error: null as string | null,
+    };
+  } catch (error) {
+    if (!(error instanceof AuditError)) throw error;
+    return { connected: true, repositories: [] as string[], error: error.message as string | null };
+  }
+}
+
+export type BitbucketImportPreview = Awaited<ReturnType<typeof bitbucketImportPreview>>;
+
+/** A code no project of the department has: the repository's name, shortened, numbered if taken. */
+function importCode(repository: BitbucketRepository, taken: Set<string>) {
+  const letters = repository.slug.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const base = (letters.length >= 2 ? letters : `${letters}REPO`).slice(0, 10);
+  let code = base;
+  for (let number = 2; taken.has(code); number += 1) code = `${base.slice(0, 10 - String(number).length)}${number}`;
+  taken.add(code);
+  return code;
+}
+
+/**
+ * Adds a project for every repository in the department's Bitbucket account that doesn't have one
+ * yet, linked to its repository. They start with no members; the daily audit picks them up.
+ */
+export async function importBitbucketProjects(actor: Actor) {
+  const departmentId = await bitbucketDepartmentOf(actor);
+  if (!departmentId) throw forbidden("Only a department's manager imports its Bitbucket projects.");
+  await requireActiveDepartment(departmentId);
+  if (!(await consumeRateLimit(`bitbucket-import:${departmentId}`, IMPORTS_PER_HOUR, 60 * 60 * 1000))) {
+    throw tooManyRequests(`Projects can be imported ${IMPORTS_PER_HOUR} times an hour. Try again later.`);
+  }
+
+  let repositories: BitbucketRepository[] | null;
+  try {
+    repositories = await importableRepositories(departmentId);
+  } catch (error) {
+    if (error instanceof AuditError) throw badRequest(error.message, "BITBUCKET_REJECTED");
+    throw error;
+  }
+  if (repositories === null) throw conflict("Connect Bitbucket in Settings first.", "BITBUCKET_NOT_CONNECTED");
+
+  const existing = await prisma.project.findMany({ where: { departmentId }, select: { code: true } });
+  const codes = new Set(existing.map((project) => project.code));
+  const batch = repositories.slice(0, IMPORT_LIMIT);
+  const data = batch.map((repository, index) => ({
+    name: (repository.name.trim().length >= 2 ? repository.name.trim() : repository.fullName).slice(0, 80),
+    code: importCode(repository, codes),
+    description: repository.description.trim().slice(0, 1000),
+    color: PALETTE[(existing.length + index) % PALETTE.length]!,
+    repository: repository.fullName,
+    departmentId,
+    ownerId: actor.id,
+    createdBy: actor.id,
+  }));
+  if (data.length > 0) {
+    await prisma.project.createMany({ data });
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor.id,
+        action: "project.import",
+        targetType: "Department",
+        targetId: departmentId,
+        meta: { count: data.length, repositories: data.map((project) => project.repository) },
+      },
+    });
+  }
+  return { imported: data.length, remaining: repositories.length - batch.length };
 }
 
 /** Only a project with no logged work can be deleted. Otherwise mark it Completed. */

@@ -12,8 +12,10 @@ import type { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/form";
 import { Card, PageHeader } from "@/components/ui/misc";
+import { BitbucketSection } from "./bitbucket-section";
 import { VsCodeSyncSection } from "./vscode-sync-section";
 import { api } from "@/lib/api-client";
+import type { BitbucketConnectionView } from "@/lib/bitbucket/connection";
 import { ROLE_LABELS, type Role, type ThemePreference } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { updateProfileSchema } from "@/validators/user";
@@ -87,7 +89,14 @@ function Toggle({
   );
 }
 
-export function SettingsView({ user }: { user: SettingsUser }) {
+export function SettingsView({
+  user,
+  bitbucket,
+}: {
+  user: SettingsUser;
+  /** The department's Bitbucket connection. Null for everyone but its manager. */
+  bitbucket: BitbucketConnectionView | null;
+}) {
   const router = useRouter();
   const { setTheme } = useTheme();
   const [preferences, setPreferences] = useState(user.preferences);
@@ -189,6 +198,15 @@ export function SettingsView({ user }: { user: SettingsUser }) {
         >
           <VsCodeSyncSection />
         </Section>
+
+        {bitbucket ? (
+          <Section
+            title="Bitbucket"
+            description="Connect your Bitbucket account to import its repositories as your department's projects, and to check their npm dependencies every day."
+          >
+            <BitbucketSection initial={bitbucket} />
+          </Section>
+        ) : null}
 
         <Section
           title="Notifications"

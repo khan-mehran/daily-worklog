@@ -64,6 +64,10 @@ const ROUTE_POLICIES: Record<string, string> = {
   "projects/[id]": "Tested below and in projects.test.ts.",
   "projects/[id]/members": "Tested below and in projects.test.ts.",
   "projects/[id]/audit": "Whoever manages the project; another department's is a 404. Tested in dependency-audit.test.ts.",
+  "projects/import":
+    "A department's manager only, importing into their own department with its own Bitbucket connection. Tested in bitbucket-import.test.ts.",
+  "bitbucket/connection":
+    "A department's manager only, for their own department. The token is never returned. Tested in bitbucket-import.test.ts.",
   tasks: "Own tasks only. Tested in tasks-and-reports.test.ts.",
   "tasks/[id]": "Own tasks only: others' are a 404. Tested in tasks-and-reports.test.ts.",
   "tasks/copy": "Copies the caller's own tasks only.",

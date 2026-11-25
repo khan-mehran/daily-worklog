@@ -145,6 +145,7 @@ model Department {
   creator User? @relation("DepartmentCreator", fields: [createdBy], references: [id], onDelete: SetNull)
 
   people        User[]         @relation("DepartmentPeople")
+  bitbucket     BitbucketConnection?
   projects      Project[]
   tasks         Task[]
   taskTemplates TaskTemplate[]
@@ -209,6 +210,25 @@ model ProjectAudit {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([attemptedAt])
+}
+
+/// A department's own Bitbucket account, entered by its manager on the Settings page. It reads the
+/// department's lockfiles for the audit and lists the repositories to import as projects.
+/// See src/lib/bitbucket/connection.ts.
+model BitbucketConnection {
+  departmentId String   @id @db.Uuid
+  /// Empty for an access token. The Atlassian email for an API token.
+  username     String?
+  /// Import only from these workspaces: "a" or "a, b". Null means every workspace the account belongs to.
+  workspace    String?
+  /// The token, encrypted with AES-256-GCM: see src/lib/crypto/secret-box.ts. Never the token itself.
+  tokenCipher  String
+  /// No foreign key: whoever saved it may since have left.
+  connectedBy  String   @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
 }
 
 /// Who is assigned to a project.

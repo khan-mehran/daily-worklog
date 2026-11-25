@@ -54,7 +54,7 @@ export const ENV_FIELDS: readonly EnvField[] = [
   {
     key: "AUTH_SECRET",
     label: "Session secret",
-    hint: "Signs sessions. Changing it signs everyone out.",
+    hint: "Signs sessions and encrypts the Bitbucket tokens managers save. Changing it signs everyone out, and those tokens must be entered again.",
     group: "Application",
     secret: true,
     required: true,
@@ -129,7 +129,7 @@ export const ENV_FIELDS: readonly EnvField[] = [
   {
     key: "BITBUCKET_TOKEN",
     label: "Bitbucket token",
-    hint: "Read-only access to your repositories, used once a day to read each project's package-lock.json. An access token needs only the Repositories: Read scope.",
+    hint: "Read-only access to your repositories, used once a day to read each project's package-lock.json. An access token needs only the Repositories: Read scope. A department whose manager has connected Bitbucket in Settings uses that account instead.",
     group: "Dependency audit",
     secret: true,
   },

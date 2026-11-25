@@ -15,6 +15,7 @@ import { apiRequest, type Paginated } from "@/lib/api-client";
 import { paletteVar, PROJECT_STATUSES, type Role } from "@/lib/constants";
 import type { ProjectSummary } from "@/lib/projects/service";
 import { formatDay } from "@/lib/utils";
+import { BitbucketImportBanner } from "./bitbucket-import";
 import { ProjectStatusBadge } from "./project-badges";
 import { PROJECTS_KEY, ProjectDialog } from "./project-dialogs";
 import { seesAllDepartments } from "@/lib/constants";
@@ -96,10 +97,13 @@ function ProjectCard({ project, showDepartment }: { project: ProjectSummary; sho
 export function ProjectsView({
   role,
   canManage,
+  canImport,
   departmentId,
 }: {
   role: Role;
   canManage: boolean;
+  /** A manager, who may import their department's projects from Bitbucket. */
+  canImport: boolean;
   /** The department new projects go to. Null for people who can't add any. */
   departmentId: string | null;
 }) {
@@ -139,6 +143,8 @@ export function ProjectsView({
             : DESCRIPTIONS[role]
         }
         actions={addButton} />
+
+      {canImport ? <BitbucketImportBanner /> : null}
 
       <div className="mb-4 flex flex-wrap gap-2">
         <div className="relative min-w-52 flex-1 sm:max-w-sm">

@@ -115,7 +115,7 @@ export function DependencyAuditCard({ className }: { className?: string }) {
             <Headline projects={data.projects} />
             {data.configured ? null : (
               <p className="text-warning-text mb-3 text-sm">
-                Bitbucket isn&apos;t connected, so nothing is being checked. A Super Admin adds the token in Site settings.
+                Bitbucket isn&apos;t connected, so nothing is being checked. A manager connects their account in Settings, or a Super Admin adds a token in Site settings.
               </p>
             )}
             <ul className="divide-y">

@@ -2,9 +2,10 @@ import type { Prisma, ProjectAudit } from "@prisma/client";
 import { AUDIT_SEVERITIES, type AuditStatus, type PaletteColor, type ProjectStatus } from "@/lib/constants";
 import { prisma } from "@/lib/db/prisma";
 import { notify } from "@/lib/notifications";
-import { projectScope, type Actor } from "@/lib/permissions";
+import { projectScope, scopeFor, type Actor } from "@/lib/permissions";
 import { auditPackages, type AuditCounts, type AuditFinding } from "./advisories";
-import { bitbucketConfigured, fetchLockfile } from "./bitbucket";
+import { auditableDepartments, bitbucketConfigured, credentialsFor } from "@/lib/bitbucket/connection";
+import { fetchLockfile } from "./bitbucket";
 import { AuditError } from "./errors";
 import { installedPackages } from "./lockfile";
 
@@ -65,7 +66,10 @@ export async function auditProject(project: AuditedProject, now = new Date()) {
   if (!project.repository) return null;
   const previous = await prisma.projectAudit.findUnique({ where: { projectId: project.id } });
   try {
-    const lockfile = await fetchLockfile(project.repository);
+    // The department's own Bitbucket account, or else the organisation's token from Site settings.
+    const credentials = await credentialsFor(project.departmentId);
+    if (!credentials) throw new AuditError("Bitbucket isn't connected for this department yet.");
+    const lockfile = await fetchLockfile(project.repository, credentials);
     const result = lockfile === null ? { counts: NO_COUNTS, findings: [] } : await auditPackages(installedPackages(lockfile));
     const status: AuditStatus = lockfile === null ? "NO_LOCKFILE" : total(result.counts) > 0 ? "VULNERABLE" : "CLEAR";
     const data = {
@@ -101,7 +105,10 @@ export async function auditProject(project: AuditedProject, now = new Date()) {
  * the last run. Safe to call as often as you like. Called by /api/cron/audit.
  */
 export async function runDueAudits(now = new Date(), { force = false } = {}) {
-  if (!bitbucketConfigured()) return { configured: false, checked: 0, vulnerable: 0, failed: 0 };
+  const departments = await auditableDepartments();
+  if (departments !== "all" && departments.length === 0) {
+    return { configured: false, checked: 0, vulnerable: 0, failed: 0 };
+  }
   const due: Prisma.ProjectWhereInput = force
     ? {}
     : {
@@ -112,7 +119,8 @@ export async function runDueAudits(now = new Date(), { force = false } = {}) {
         ],
       };
   const projects = await prisma.project.findMany({
-    where: { repository: { not: null }, ...due },
+    // A department with no way to read its repositories is left alone, not marked as failing.
+    where: { repository: { not: null }, ...(departments === "all" ? {} : { departmentId: { in: departments } }), ...due },
     select: { id: true, name: true, departmentId: true, ownerId: true, repository: true },
     orderBy: { createdAt: "asc" },
     take: PROJECTS_PER_RUN,
@@ -150,7 +158,8 @@ const STATUS_ORDER: Record<AuditStatus, number> = { VULNERABLE: 0, UNKNOWN: 1, N
 /** The dashboard card: every project the actor can see that has a repository, worst first. */
 export async function auditOverview(actor: Actor, selectedDepartmentId: string | null) {
   const scope = projectScope(actor, selectedDepartmentId);
-  const [projects, unlinked] = await Promise.all([
+  const [configured, projects, unlinked] = await Promise.all([
+    bitbucketConfigured(scopeFor(actor, selectedDepartmentId)),
     prisma.project.findMany({
       where: { ...scope, repository: { not: null } },
       select: { id: true, name: true, color: true, audit: true },
@@ -174,7 +183,7 @@ export async function auditOverview(actor: Actor, selectedDepartmentId: string |
       Number(Boolean(b.error)) - Number(Boolean(a.error)) ||
       a.name.localeCompare(b.name),
   );
-  return { configured: bitbucketConfigured(), unlinked, projects: rows };
+  return { configured, unlinked, projects: rows };
 }
 
 /**
@@ -217,7 +226,7 @@ export async function auditReport(actor: Actor, selectedDepartmentId: string | n
       Number(Boolean(b.error)) - Number(Boolean(a.error)) ||
       a.name.localeCompare(b.name),
   );
-  return { configured: bitbucketConfigured(), projects: rows };
+  return { configured: await bitbucketConfigured(scopeFor(actor, selectedDepartmentId)), projects: rows };
 }
 
 export type AuditReport = Awaited<ReturnType<typeof auditReport>>;

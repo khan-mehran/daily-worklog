@@ -216,6 +216,8 @@ export async function changeDepartmentManager(actor: Actor, id: string, assignme
         data: { currentApproverId: manager.id },
       });
       await tx.projectMember.deleteMany({ where: { userId: previousManagerId, project: { departmentId: id } } });
+      // The Bitbucket token was the previous manager's own, so it leaves with them.
+      await tx.bitbucketConnection.deleteMany({ where: { departmentId: id } });
     });
   } catch (error) {
     if (isNew) await prisma.user.delete({ where: { id: manager.id } });
